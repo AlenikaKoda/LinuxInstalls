@@ -46,14 +46,14 @@ fi
 fc-cache -fv
 echo "Fonts installed and cache updated successfully!"
 
-# 3. Backup existing Neovim config
+# 3. Delete existing Neovim config
 echo "[3/4] Backing up existing Neovim configuration..."
 if [ -d "$HOME/.config/nvim" ]; then
-    mv "$HOME/.config/nvim" "$HOME/.config/nvim.bak.$(date +%Y%m%d_%H%M%S)"
-    echo "Existing config backed up to ~/.config/nvim.bak.*"
+    rm -fr "$HOME/.config/nvim"
+    echo "Existing config deleted: ~/.config/nvim"
 fi
 if [ -d "$HOME/.local/share/nvim" ]; then
-    mv "$HOME/.local/share/nvim" "$HOME/.local/share/nvim.bak.$(date +%Y%m%d_%H%M%S)"
+    rm -fr "$HOME/.local/share/nvim"
 fi
 
 # 4. Create Neovim Configuration Structure
@@ -428,6 +428,13 @@ return {
           show_buffer_close_icons = false,
           numbers = "ordinal", -- shows 1, 2, 3... on the left of each tab,
           -- matching the position used by the Alt+number jump below.
+          --
+          -- Makes :BufferLineMovePrev/MoveNext refuse to walk an
+          -- unpinned buffer across the pinned block (wraps to the
+          -- other end instead) -- this is bufferline's own built-in
+          -- boundary check (see get_last_pinned_index/M.move in its
+          -- source), just off by default.
+          move_wraps_at_ends = true,
         }
       })
 
@@ -457,7 +464,9 @@ return {
       -- Alt+,/. : reorder the current buffer left/right in the
       -- bufferline (persists for the session as long as
       -- sessionoptions includes "globals", which lazy.nvim's default
-      -- vimrc already does).
+      -- vimrc already does). move_wraps_at_ends above handles keeping
+      -- these from crossing into the pinned block -- no custom guard
+      -- needed here.
       vim.keymap.set('n', '<A-,>', '<cmd>BufferLineMovePrev<cr>', { desc = "Move Buffer Left" })
       vim.keymap.set('n', '<A-.>', '<cmd>BufferLineMoveNext<cr>', { desc = "Move Buffer Right" })
 
@@ -468,25 +477,38 @@ return {
       -- here, set at the same time as the real toggle. bufferline's
       -- internal pin/group state isn't reliably exposed as a stable
       -- public API across versions -- require('bufferline').group_action
-      -- (used previously) doesn't exist on the version actually
-      -- installed here, hence the E5108 error. Tracking it ourselves
-      -- means <leader>bx below never has to ask bufferline which
-      -- buffers are pinned at all.
+      -- (tried previously) doesn't exist on the version actually
+      -- installed here, hence the earlier E5108 error. Tracking it
+      -- ourselves means <leader>bx below never has to ask bufferline
+      -- which buffers are pinned at all.
       --
-      -- redrawtabline is a best-effort nudge for a separate, known
-      -- bufferline rough edge: after a buffer's position changes (e.g.
-      -- pinning moves it to the front), the ordinal NUMBER LABEL can
-      -- briefly lag behind and show the old numbering until the next
-      -- redraw. This doesn't affect the earlier Alt+number jump
-      -- itself -- it still goes to the correct buffer -- only what's
-      -- printed on the tab. If the label still looks wrong after this,
-      -- or Alt+number ever jumps to the WRONG buffer (not just shows
-      -- the wrong label), let me know and we'll dig further.
+      -- :BufferLineTogglePin only updates the RENDER-time grouping; it
+      -- doesn't physically move the buffer within bufferline's
+      -- internal position list (state.components), which is the exact
+      -- list go_to()/number labels are computed from. That gap is what
+      -- caused Alt+number to occasionally land on/label the wrong
+      -- buffer right after pinning. move_to() operates on that same
+      -- internal list directly (it's what :BufferLineMovePrev/Next and
+      -- the sort commands use internally), so calling it here forces
+      -- the two back into sync immediately: to the front when pinning,
+      -- to just after the remaining pinned block when unpinning.
       vim.keymap.set('n', '<leader>bp', function()
         vim.cmd('BufferLineTogglePin')
-        vim.cmd('redrawtabline')
         local buf = vim.api.nvim_get_current_buf()
-        vim.b[buf].pinned = not vim.b[buf].pinned
+        local now_pinned = not vim.b[buf].pinned
+        vim.b[buf].pinned = now_pinned
+
+        if now_pinned then
+          require('bufferline').move_to(1)
+        else
+          local pinned_count = 0
+          for _, b in ipairs(vim.fn.getbufinfo({ buflisted = 1 })) do
+            if b.bufnr ~= buf and vim.b[b.bufnr].pinned then
+              pinned_count = pinned_count + 1
+            end
+          end
+          require('bufferline').move_to(pinned_count + 1)
+        end
       end, { desc = "Toggle Pin" })
 
       -- Close every unpinned buffer that has NO unsaved changes, using
