@@ -1,0 +1,1 @@
+cpo motd /etc/motd
