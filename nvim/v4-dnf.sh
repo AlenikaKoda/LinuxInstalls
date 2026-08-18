@@ -46,7 +46,7 @@ fi
 fc-cache -fv
 echo "Fonts installed and cache updated successfully!"
 
-# 3. Backup existing Neovim config
+# 3. Delete existing Neovim config
 echo "[3/4] Deleting existing Neovim configurations..."
 if [ -d "$HOME/.config/nvim" ]; then
     rm -fr "$HOME/.config/nvim"
@@ -68,6 +68,11 @@ vim.g.maplocalleader = " "
 
 -- Basic Options
 vim.opt.number = true
+-- Tab width: 4 spaces, expanded (matches IndentWidth: 4 in ~/.clang-format)
+vim.opt.tabstop = 4
+vim.opt.shiftwidth = 4
+vim.opt.softtabstop = 4
+vim.opt.expandtab = true
 vim.opt.relativenumber = true
 vim.opt.mouse = "a"
 vim.opt.clipboard = "unnamedplus"
@@ -315,10 +320,12 @@ return {
     config = function()
       require("neogen").setup({
         enabled = true,
-        languages = {
-          c = { template = { annotation_convention = "doxygen" } },
-          cpp = { template = { annotation_convention = "doxygen" } },
-        },
+        -- c/cpp's default annotation_convention is already
+        -- "doxygen_cpp", so nothing to override there.
+        snippet_engine = "luasnip", -- inserted fields become LuaSnip
+        -- tabstops, so <Tab>/<S-Tab> (wired up in the nvim-cmp config
+        -- below for cmp/LuaSnip) cycles through @brief, each @param,
+        -- and @return.
       })
       vim.keymap.set("n", "<leader>cd", function()
         require("neogen").generate()
@@ -718,7 +725,15 @@ return {
           -- just with the same on_list handling as gd above.
           vim.lsp.buf.declaration({ on_list = on_list })
         end, { buffer = bufnr, silent = true, desc = "Go to Declaration" })
-        vim.keymap.set('n', 'gr', vim.lsp.buf.references, { buffer = bufnr, silent = true, desc = "Find References" })
+
+        vim.keymap.set('n', 'gr', function()
+          -- vim.lsp.buf.references() on its own just fills the
+          -- quickfix list silently without opening it, so pressing gr
+          -- looks like nothing happened. Telescope's picker actually
+          -- shows the list with a preview, same as gd above.
+          require('telescope.builtin').lsp_references({ reuse_win = true })
+        end, { buffer = bufnr, silent = true, desc = "Find References" })
+
         vim.keymap.set('n', 'K', vim.lsp.buf.hover, { buffer = bufnr, silent = true, desc = "Hover Info" })
 
         -- Safe Rename Function (Fixes double execution/prompt issues)
@@ -773,6 +788,17 @@ return {
     config = function()
       local cmp = require("cmp")
       local luasnip = require("luasnip")
+
+      -- Without this, LuaSnip never checks whether the cursor has
+      -- actually left a snippet's text -- so pressing Tab later, even
+      -- lines away, can jump straight back into an old, unfinished
+      -- placeholder session (e.g. clangd's function-argument
+      -- placeholders). region_check_events makes it watch cursor
+      -- movement and automatically exit a snippet once you've moved
+      -- outside its region, in both normal and insert mode.
+      luasnip.setup({
+        region_check_events = "CursorMoved,CursorMovedI",
+      })
 
       cmp.setup({
         -- Ghost text: previews the currently-selected completion inline
@@ -851,29 +877,6 @@ return {
           { name = "path" },
         }),
       })
-    end,
-  },
-
-  -- Doxygen comment generation. There's no such thing as a real
-  -- "Doxygen language server" -- Doxygen comments are just C/C++
-  -- comments with special syntax, and clangd already parses and
-  -- renders them in hover docs with zero config. What this adds is
-  -- generating the comment SKELETON itself: put the cursor on/inside a
-  -- function and generate an empty @brief/@param/@return block for it.
-  {
-    "danymat/neogen",
-    dependencies = "nvim-treesitter/nvim-treesitter",
-    config = function()
-      require("neogen").setup({
-        -- cpp/c's default annotation_convention is already
-        -- "doxygen_cpp", so nothing to override there.
-        snippet_engine = "luasnip", -- inserted fields become LuaSnip
-        -- tabstops, so <Tab>/<S-Tab> (already wired up above for
-        -- cmp/LuaSnip) cycles through @brief, each @param, and @return.
-      })
-      vim.keymap.set('n', '<leader>ld', function()
-        require("neogen").generate()
-      end, { desc = "Generate Doc Comment (Doxygen)" })
     end,
   },
 
