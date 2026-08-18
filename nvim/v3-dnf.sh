@@ -46,11 +46,10 @@ fi
 fc-cache -fv
 echo "Fonts installed and cache updated successfully!"
 
-# 3. Delete existing Neovim config
-echo "[3/4] Backing up existing Neovim configuration..."
+# 3. Backup existing Neovim config
+echo "[3/4] Deleting existing Neovim configurations..."
 if [ -d "$HOME/.config/nvim" ]; then
     rm -fr "$HOME/.config/nvim"
-    echo "Existing config deleted: ~/.config/nvim"
 fi
 if [ -d "$HOME/.local/share/nvim" ]; then
     rm -fr "$HOME/.local/share/nvim"
