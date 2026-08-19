@@ -3,15 +3,130 @@
 echo
 
 echo "========================================="
-echo " Starting Neovim Setup for Fedora"
+echo " Starting Neovim Setup"
 echo "========================================="
 
-# 1. Install System Dependencies via DNF
-echo "[1/4] Installing system dependencies and LSPs..."
-sudo dnf install -y neovim git curl wget gcc gcc-c++ make cmake \
-    nodejs npm python3-pip ripgrep fd-find \
-    golang clang-tools-extra dotnet-sdk-8.0 unzip fontconfig \
-    lldb gdb fish
+# 1. Detect distro and install system dependencies
+echo "[1/4] Detecting distro and installing system dependencies..."
+
+if [ ! -f /etc/os-release ]; then
+    echo "ERROR: Cannot detect your Linux distribution (/etc/os-release not found)."
+    echo "This script supports Fedora, Ubuntu, Debian, and Arch Linux."
+    exit 1
+fi
+. /etc/os-release
+DISTRO_ID="$ID"
+DISTRO_ID_LIKE="${ID_LIKE:-}"
+
+# Normalize into one of: fedora, debian, arch. Checking ID_LIKE too so
+# common derivatives (Pop!_OS, Linux Mint, Manjaro, EndeavourOS, etc.)
+# land in the right family even though only the four distros above
+# were specifically asked for.
+case "$DISTRO_ID $DISTRO_ID_LIKE" in
+    *fedora*|*rhel*)
+        DISTRO_FAMILY="fedora"
+        ;;
+    *arch*)
+        DISTRO_FAMILY="arch"
+        ;;
+    *debian*|*ubuntu*)
+        DISTRO_FAMILY="debian"
+        ;;
+    *)
+        echo "ERROR: Unsupported or undetected distro (ID=$DISTRO_ID, ID_LIKE=$DISTRO_ID_LIKE)."
+        echo "This script supports Fedora, Ubuntu, Debian, and Arch Linux."
+        exit 1
+        ;;
+esac
+echo "Detected: $DISTRO_ID (family: $DISTRO_FAMILY)"
+
+case "$DISTRO_FAMILY" in
+    fedora)
+        sudo dnf install -y neovim git curl wget gcc gcc-c++ make cmake \
+            nodejs npm python3-pip ripgrep fd-find \
+            golang clang-tools-extra dotnet-sdk-8.0 unzip fontconfig \
+            lldb gdb fish
+        ;;
+
+    debian)
+        export DEBIAN_FRONTEND=noninteractive
+        sudo apt-get update
+        # Package name differences from Fedora: g++ (not gcc-c++),
+        # golang-go (not golang), clang-tools (not clang-tools-extra --
+        # Debian/Ubuntu split clang-format/clang-tidy differently, this
+        # is the closest equivalent bundle).
+        sudo apt-get install -y neovim git curl wget gcc g++ make cmake \
+            nodejs npm python3-pip ripgrep fd-find \
+            golang-go clang-tools unzip fontconfig \
+            lldb gdb fish
+
+        # fd-find installs its binary as `fdfind` on Debian/Ubuntu (a
+        # name clash with an unrelated existing package called `fd`),
+        # unlike Fedora/Arch where it's just `fd`. Symlink it so tools
+        # that look for a plain `fd` on PATH (e.g. Telescope's
+        # find_files) work the same way here as everywhere else.
+        if command -v fdfind >/dev/null 2>&1 && ! command -v fd >/dev/null 2>&1; then
+            mkdir -p "$HOME/.local/bin"
+            ln -sf "$(command -v fdfind)" "$HOME/.local/bin/fd"
+            echo "Symlinked fdfind -> ~/.local/bin/fd (make sure ~/.local/bin is on your PATH)."
+        fi
+
+        # .NET SDK: Ubuntu ships dotnet-sdk-8.0 directly in its own
+        # repos. Debian does not (long-standing packaging/licensing
+        # reasons) and needs Microsoft's own apt feed added first.
+        # Best-effort either way -- a failure here doesn't stop the
+        # rest of the script, since this only matters for C#/omnisharp.
+        if [ "$DISTRO_ID" = "ubuntu" ] || echo "$DISTRO_ID_LIKE" | grep -qi ubuntu; then
+            sudo apt-get install -y dotnet-sdk-8.0 || \
+                echo "WARNING: dotnet-sdk-8.0 install failed -- see https://learn.microsoft.com/en-us/dotnet/core/install/linux-ubuntu-install"
+        else
+            (
+                set -e
+                DEBIAN_MAJOR="${VERSION_ID%%.*}"
+                wget -q "https://packages.microsoft.com/config/debian/${DEBIAN_MAJOR}/packages-microsoft-prod.deb" -O /tmp/packages-microsoft-prod.deb
+                sudo dpkg -i /tmp/packages-microsoft-prod.deb
+                rm -f /tmp/packages-microsoft-prod.deb
+                sudo apt-get update
+                sudo apt-get install -y dotnet-sdk-8.0
+            ) || echo "WARNING: dotnet-sdk-8.0 install failed -- see https://learn.microsoft.com/en-us/dotnet/core/install/linux-debian for manual steps"
+        fi
+        ;;
+
+    arch)
+        # Arch's own wiki explicitly warns against `pacman -Sy
+        # <package>` (sync without upgrading first) -- it risks
+        # partial-upgrade dependency issues. -Syu first is the
+        # recommended safe order; this does mean the script also
+        # upgrades your existing packages, not just installs new ones,
+        # which is expected/intentional here, not a side effect to
+        # work around.
+        sudo pacman -Syu --noconfirm
+        # Package name differences from Fedora: gcc includes g++
+        # already (no separate gcc-c++ package), python-pip (not
+        # python3-pip -- Arch's default python already is python3),
+        # fd (not fd-find), go (not golang), clang bundles clang-format/
+        # clang-tidy directly (no separate clang-tools-extra).
+        sudo pacman -S --noconfirm neovim git curl wget gcc make cmake \
+            nodejs npm python-pip ripgrep fd \
+            go clang dotnet-sdk-8.0 unzip fontconfig \
+            lldb gdb fish
+        ;;
+esac
+
+# This config relies on fairly recent Neovim APIs (vim.lsp.config/
+# enable, virtual_lines diagnostics, vim.o.winborder -- all 0.11+).
+# Distro-packaged Neovim can lag well behind that, especially on
+# Debian stable and older Ubuntu LTS releases. Warn (don't fail) if
+# what actually got installed is too old.
+NVIM_VER_LINE=$(nvim --version 2>/dev/null | head -n1)
+NVIM_MAJOR=$(echo "$NVIM_VER_LINE" | sed -n 's/.*v\([0-9]*\)\.\([0-9]*\).*/\1/p')
+NVIM_MINOR=$(echo "$NVIM_VER_LINE" | sed -n 's/.*v\([0-9]*\)\.\([0-9]*\).*/\2/p')
+if [ -n "$NVIM_MAJOR" ] && [ -n "$NVIM_MINOR" ] && [ "$NVIM_MAJOR" -eq 0 ] && [ "$NVIM_MINOR" -lt 11 ]; then
+    echo "WARNING: Installed Neovim is v${NVIM_MAJOR}.${NVIM_MINOR}, but this config needs 0.11+."
+    echo "         Debian stable and older Ubuntu LTS releases often ship an older"
+    echo "         version. See https://github.com/neovim/neovim/blob/master/INSTALL.md"
+    echo "         for official AppImage/PPA/prebuilt options if so."
+fi
 
 # Install global NPM packages for JS/TS, HTML, and CSS LSPs
 echo "Installing NPM-based LSPs..."
@@ -46,7 +161,7 @@ fi
 fc-cache -fv
 echo "Fonts installed and cache updated successfully!"
 
-# 3. Deletes existing Neovim config
+# 3. Delete existing Neovim config
 echo "[3/4] Deleting existing Neovim configurations..."
 if [ -d "$HOME/.config/nvim" ]; then
     rm -fr "$HOME/.config/nvim"

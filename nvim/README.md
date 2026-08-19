@@ -1,6 +1,8 @@
-# Neovim Setup for Fedora
+# Neovim Setup
 
 A single-script Neovim configuration built around C/C++ development (CMake + clangd + codelldb), with LSP support for Go, C#, TypeScript/JavaScript, HTML, and CSS alongside it.
+
+Supports **Fedora, Ubuntu, Debian, and Arch Linux** (and their common derivatives — Pop!_OS, Linux Mint, Manjaro, EndeavourOS, etc. — via `/etc/os-release`'s `ID_LIKE`) — the script detects which one you're on and uses the right package manager and package names automatically.
 
 ## Installing
 
@@ -12,16 +14,25 @@ chmod +x setup_neovim.sh
 **This deletes `~/.config/nvim` and `~/.local/share/nvim` before writing the new config** — there is no backup step. If you have an existing Neovim setup you care about, copy it elsewhere first.
 
 The script:
-1. Installs system packages via `dnf` (compilers, debuggers, language runtimes, LSPs) and two Nerd Fonts (JetBrainsMono, Cascadia Code) for icon glyphs.
+1. Detects your distro and installs system packages via the right manager (`dnf`/`apt`/`pacman`), plus two Nerd Fonts (JetBrainsMono, Cascadia Code) for icon glyphs.
 2. Wipes and rewrites `~/.config/nvim`.
 3. Writes a personal `~/.clang-format` fallback (see [Formatting](#formatting)).
 
 First launch will take a minute or two: `lazy.nvim` bootstraps itself and installs all plugins, then Mason installs the language servers and `codelldb`.
 
+### Distro-specific notes
+
+- **Debian**: the .NET SDK isn't in Debian's own repos, so the script adds Microsoft's apt feed just for that one package. This step is best-effort — if it fails, the rest of the script still completes; see the printed warning for manual install instructions (only matters for C#/omnisharp).
+- **Ubuntu/Debian**: `fd-find`'s binary is named `fdfind` (a package-name clash with something unrelated), not `fd` like on Fedora/Arch. The script symlinks `~/.local/bin/fd` to it so anything expecting a plain `fd` on `PATH` (e.g. Telescope's file finder) works the same as everywhere else — make sure `~/.local/bin` is actually on your `PATH`.
+- **Arch**: the script runs a full `pacman -Syu` before installing anything new, per Arch's own guidance against partial upgrades — this does mean it'll upgrade your existing packages too, not just add new ones.
+- **Older distro releases** (Debian stable, older Ubuntu LTS): this config relies on Neovim 0.11+ APIs throughout. If your distro's packaged Neovim is older, the script prints a warning after install — see [Neovim's install docs](https://github.com/neovim/neovim/blob/master/INSTALL.md) for an AppImage/PPA/prebuilt build if so.
+
 ## What gets installed
 
-- **Compilers/tools**: gcc, g++, make, cmake, clang-tools-extra, lldb, gdb, dotnet-sdk-8.0, golang, nodejs/npm, python3-pip
-- **CLI tools**: ripgrep, fd-find, git, curl, wget, unzip, fish (used only for Neovim's embedded terminal — see [Terminal](#terminal))
+Package names vary by distro (see the script for the exact list per package manager), but the same set gets installed everywhere:
+
+- **Compilers/tools**: gcc, g++, make, cmake, clang tooling, lldb, gdb, .NET SDK 8.0, Go, nodejs/npm, python3-pip
+- **CLI tools**: ripgrep, fd, git, curl, wget, unzip, fish (used only for Neovim's embedded terminal — see [Terminal](#terminal))
 - **Language servers**: clangd, gopls, omnisharp, ts_ls, html, cssls (via Mason), plus `typescript-language-server` and `vscode-langservers-extracted` via npm
 - **Debug adapter**: codelldb (auto-installed by Mason on first debug session)
 
