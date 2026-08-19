@@ -31,7 +31,7 @@ First launch will take a minute or two: `lazy.nvim` bootstraps itself and instal
 - Tab width: **4**, using real tab characters — not expanded to spaces.
 - True color, rounded borders on floating windows (hover, LspInfo, Mason, etc. — Neovim 0.11+), styled window separators.
 - OSC 52 clipboard support, so yank/paste works correctly over SSH.
-- `c`/`cpp` indentation uses Vim's native `cindent` rather than treesitter's indent module — treesitter's C/C++ indent is known to be unreliable (inconsistent brace placement); `cindent` is far more predictable for brace-heavy code.
+- `c`/`cpp`/`javascript`/`typescript` indentation uses Neovim's own built-in per-filetype indent logic (`cindent` for c/cpp, the bundled JS/TS indent scripts for the rest) rather than treesitter's indent module — treesitter's indent is known to be unreliable for these specifically (inconsistent brace placement, phantom extra indent on nested blocks), more so since the `nvim-treesitter` branch this config uses is frozen upstream (see [Known quirks](#known-quirks)). `css`/`json` are also curly-brace languages that can hit the same issue — worth disabling there too if it comes up.
 
 ### General keymaps
 

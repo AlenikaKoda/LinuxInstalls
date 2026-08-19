@@ -46,7 +46,7 @@ fi
 fc-cache -fv
 echo "Fonts installed and cache updated successfully!"
 
-# 3. Delete existing Neovim config
+# 3. Deletes existing Neovim config
 echo "[3/4] Deleting existing Neovim configurations..."
 if [ -d "$HOME/.config/nvim" ]; then
     rm -fr "$HOME/.config/nvim"
@@ -294,13 +294,20 @@ return {
         indent = {
           enable = true,
           -- treesitter's indent module is well-known to be unreliable
-          -- specifically for C/C++ (inconsistent brace placement,
-          -- phantom extra indent on nested blocks) while being fine
-          -- for the other languages here. Disabling it just for c/cpp
-          -- falls back to Vim's built-in 'cindent', which Neovim
-          -- already auto-enables for these filetypes via its standard
-          -- ftplugin and is much more predictable for brace-heavy code.
-          disable = { "c", "cpp" },
+          -- for a handful of languages specifically (inconsistent
+          -- brace placement, phantom extra indent on nested blocks)
+          -- while being fine for the rest. This is more pronounced on
+          -- the "master" branch pinned above, since it's frozen and
+          -- gets no further upstream fixes at all. Disabling it for
+          -- these falls back to Neovim's own built-in, per-filetype
+          -- indent logic (cindent for c/cpp, the bundled javascript/
+          -- typescript indent scripts for the rest), which is far
+          -- more predictable for brace-heavy code.
+          --
+          -- css and json are also curly-brace languages that CAN hit
+          -- the same class of issue -- add them here too if you
+          -- notice the same symptom there.
+          disable = { "c", "cpp", "javascript", "typescript" },
         },
       })
     end,
