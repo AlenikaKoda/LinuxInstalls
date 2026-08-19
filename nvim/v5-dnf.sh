@@ -68,11 +68,11 @@ vim.g.maplocalleader = " "
 
 -- Basic Options
 vim.opt.number = true
--- Tab width: 4 spaces, expanded (matches IndentWidth: 4 in ~/.clang-format)
+-- Tab width: 4, using real tab characters (not expanded to spaces)
 vim.opt.tabstop = 4
 vim.opt.shiftwidth = 4
 vim.opt.softtabstop = 4
-vim.opt.expandtab = true
+vim.opt.expandtab = false
 vim.opt.relativenumber = true
 vim.opt.mouse = "a"
 vim.opt.clipboard = "unnamedplus"
@@ -464,6 +464,31 @@ return {
         end, { desc = "Go to Buffer " .. i })
       end
       vim.keymap.set('n', '<A-0>', function()
+        require('bufferline').go_to(-1, true)
+      end, { desc = "Go to Last Buffer" })
+
+      -- F1..F9: same jump-by-position, on Fn+Number instead of
+      -- Alt+Number. Explicitly setting <F1> here overrides Neovim's
+      -- default <F1>-opens-help binding outright (any explicit
+      -- vim.keymap.set for a key always supersedes Neovim's built-in
+      -- default for it), so no separate step is needed to "disable"
+      -- that.
+      --
+      -- <F5> and <F10> are set below, OUTSIDE this loop -- both are
+      -- shared with nvim-dap (Continue and Step Over respectively) and
+      -- toggle dynamically based on whether a debug session is active
+      -- (see the dap.listeners hooks in the DAP plugin further down).
+      -- At rest, both act as ordinary buffer jumps like everything
+      -- else in this loop.
+      for _, i in ipairs({ 1, 2, 3, 4, 6, 7, 8, 9 }) do
+        vim.keymap.set('n', ('<F%d>'):format(i), function()
+          require('bufferline').go_to(i, true)
+        end, { desc = "Go to Buffer " .. i })
+      end
+      vim.keymap.set('n', '<F5>', function()
+        require('bufferline').go_to(5, true)
+      end, { desc = "Go to Buffer 5" })
+      vim.keymap.set('n', '<F10>', function()
         require('bufferline').go_to(-1, true)
       end, { desc = "Go to Last Buffer" })
 
@@ -923,6 +948,31 @@ return {
         dapui.close()
       end
 
+      -- <F5> and <F10> are each shared between an nvim-dap action
+      -- (Continue, Step Over) and a bufferline buffer jump (buffer 5,
+      -- last buffer) -- at rest they're buffer jumps; for the
+      -- duration of a debug session they're handed over to DAP
+      -- instead, so nothing fights over the same key. Note this means
+      -- <F5> can no longer START a fresh session on its own (there's
+      -- no session yet at that point, so it's still doing buffer-jump
+      -- duty) -- use <leader>dc or <leader>db to start one, then <F5>
+      -- takes over for continuing from there. Reusing the same
+      -- listener points as the dapui open/close hooks above.
+      dap.listeners.after.event_initialized["fkey_toggle"] = function()
+        vim.keymap.set('n', '<F5>', dap.continue, { desc = "Debug: Continue" })
+        vim.keymap.set('n', '<F10>', dap.step_over, { desc = "Debug: Step Over" })
+      end
+      local function restore_fkey_buffer_jumps()
+        vim.keymap.set('n', '<F5>', function()
+          require('bufferline').go_to(5, true)
+        end, { desc = "Go to Buffer 5" })
+        vim.keymap.set('n', '<F10>', function()
+          require('bufferline').go_to(-1, true)
+        end, { desc = "Go to Last Buffer" })
+      end
+      dap.listeners.before.event_terminated["fkey_toggle"] = restore_fkey_buffer_jumps
+      dap.listeners.before.event_exited["fkey_toggle"] = restore_fkey_buffer_jumps
+
       -- C / C++ / Rust launch configs, all sharing the codelldb adapter
       dap.configurations.cpp = {
         {
@@ -958,8 +1008,10 @@ return {
       vim.api.nvim_set_hl(0, "DapStoppedLine", { bg = "#0b3528" })
 
       -- Keymaps, grouped under <leader>d (shows in which-key)
-      vim.keymap.set('n', '<F5>', dap.continue, { desc = "Debug: Continue" })
-      vim.keymap.set('n', '<F10>', dap.step_over, { desc = "Debug: Step Over" })
+      -- <F5> and <F10> intentionally NOT bound here -- both are set
+      -- dynamically by the dap.listeners hooks above (Continue/Step
+      -- Over only while a session is active; bufferline's buffer-5/
+      -- last-buffer jumps otherwise).
       vim.keymap.set('n', '<F11>', dap.step_into, { desc = "Debug: Step Into" })
       vim.keymap.set('n', '<F12>', dap.step_out, { desc = "Debug: Step Out" })
 
@@ -1158,8 +1210,10 @@ BasedOnStyle: LLVM
 BreakBeforeBraces: Attach
 IndentWidth: 4
 ColumnLimit: 100
+UseTab: Always
+TabWidth: 4
 EOF
-echo "Wrote ~/.clang-format (Attach braces)."
+echo "Wrote ~/.clang-format (Attach braces, real tabs)."
 
 echo "========================================="
 echo " Setup Complete!"

@@ -28,7 +28,7 @@ First launch will take a minute or two: `lazy.nvim` bootstraps itself and instal
 ## Editor basics
 
 - Relative + absolute line numbers, system clipboard integration (`unnamedplus`), persistent undo, smart-case search, always-on sign column.
-- Tab width: **4 spaces**, expanded (matches `~/.clang-format`'s `IndentWidth: 4`).
+- Tab width: **4**, using real tab characters — not expanded to spaces.
 - True color, rounded borders on floating windows (hover, LspInfo, Mason, etc. — Neovim 0.11+), styled window separators.
 - OSC 52 clipboard support, so yank/paste works correctly over SSH.
 - `c`/`cpp` indentation uses Vim's native `cindent` rather than treesitter's indent module — treesitter's C/C++ indent is known to be unreliable (inconsistent brace placement); `cindent` is far more predictable for brace-heavy code.
@@ -64,12 +64,14 @@ Each buffer tab shows its ordinal position number. Pinned buffers are always kep
 | Key | Action |
 |---|---|
 | `<S-h>` / `<S-l>` | Previous / next buffer (follows the order shown on screen, including any reordering) |
-| `<A-1>` … `<A-9>` | Jump directly to the buffer at that position |
-| `<A-0>` | Jump to the last buffer |
+| `<A-1>` … `<A-9>` / `<F1>`–`<F9>` | Jump directly to the buffer at that position. `<F5>` and `<F10>` each pull double duty with the debugger (see [Debugging](#debugging-nvim-dap)) — they act as buffer jumps at rest, and hand themselves over to DAP for the duration of an active debug session. |
+| `<A-0>` / `<F10>` | Jump to the last buffer. |
 | `<A-,>` / `<A-.>` | Move current buffer left / right (blocked from crossing into the pinned block — wraps to the other end instead) |
 | `<leader>bp` | Toggle pin on current buffer |
 | `<leader>bx` | Close every **unpinned** buffer with **no unsaved changes** (pinned buffers and anything modified are left alone) |
 | `<leader>bd` | Close current buffer |
+
+Setting an explicit `<F1>` mapping here also overrides Neovim's built-in `<F1>`-opens-help default — any explicit keymap for a key always takes precedence over Neovim's default for it.
 
 ## File & text search (`telescope`)
 
@@ -120,8 +122,8 @@ C/C++ (and Rust) debugging via `codelldb`, auto-installed by Mason on first use.
 
 | Key | Action |
 |---|---|
-| `F5` / `<leader>dc` | Continue / start debugging |
-| `F10` / `<leader>do` | Step over |
+| `F5` / `<leader>dc` | Continue / start debugging — `F5` only while a session is already active; before that it's the "jump to buffer 5" shortcut, so **start a session with `<leader>dc` or `<leader>db`**, not `F5` |
+| `F10` / `<leader>do` | Step over — `F10` only while a debug session is active; otherwise it's the "jump to last buffer" shortcut (see [Buffers & tabs](#buffers--tabs-bufferline)) |
 | `F11` / `<leader>di` | Step into |
 | `F12` / `<leader>dO` | Step out |
 | `<leader>db` | Toggle breakpoint |
@@ -150,7 +152,7 @@ Neovim's embedded terminal launches **fish** instead of your login shell, purely
 
 ## Formatting
 
-`~/.clang-format` is written on every run (LLVM-based, `BreakBeforeBraces: Attach` for K&R-style braces, 4-space indent, 100-column limit). `clang-format` walks upward from the file being formatted looking for a `.clang-format`; since `$HOME` sits above every project, this acts as a personal default for any project that doesn't ship its own `.clang-format` — a project's own file always takes precedence.
+`~/.clang-format` is written on every run (LLVM-based, `BreakBeforeBraces: Attach` for K&R-style braces, 4-wide real tabs via `UseTab: Always`/`TabWidth: 4` to match the editor, 100-column limit). `clang-format` walks upward from the file being formatted looking for a `.clang-format`; since `$HOME` sits above every project, this acts as a personal default for any project that doesn't ship its own `.clang-format` — a project's own file always takes precedence.
 
 ## Known quirks
 
