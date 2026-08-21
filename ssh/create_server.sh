@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-
 # Exit immediately if a command exits with a non-zero status
 set -e
 
@@ -9,20 +8,13 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 if ! command -v systemctl >/dev/null 2>&1; then
-  echo "Error: systemd is not installed or running. This script requires systemd for auto-restarts."
+  echo "Error: systemd is not installed or running."
   exit 1
 fi
 
 INSTANCE_NAME=$1
 if [ -z "$INSTANCE_NAME" ]; then
   echo "Usage: $0 <instance_name>"
-  exit 1
-fi
-
-# Locate the sshd binary
-SSHD_BIN=$(command -v sshd || echo "/usr/sbin/sshd")
-if [ ! -x "$SSHD_BIN" ]; then
-  echo "Error: sshd binary not found. Please install OpenSSH."
   exit 1
 fi
 
@@ -36,10 +28,38 @@ if [ -d "$BASE_DIR" ] || [ -f "$SERVICE_FILE" ]; then
   exit 1
 fi
 
+# --- USER MANAGEMENT ---
+read -p "Enter the username to restrict this SSH instance to: " SSH_USER
+if [ -z "$SSH_USER" ]; then
+    echo "Error: Username cannot be empty."
+    exit 1
+fi
+
+if id "$SSH_USER" >/dev/null 2>&1; then
+    echo "User '$SSH_USER' already exists. This instance will be restricted to them."
+else
+    read -p "User '$SSH_USER' does not exist. Create new user? [Y/n] " CREATE_USER
+    if [[ "$CREATE_USER" =~ ^[Yy]$ ]] || [[ -z "$CREATE_USER" ]]; then
+        useradd -m -s /bin/bash "$SSH_USER"
+        echo "Please set a password for the new user '$SSH_USER':"
+        passwd "$SSH_USER"
+    else
+        echo "Aborting setup."
+        exit 1
+    fi
+fi
+
+# --- SSHD LOCATOR (Crucial for cross-distro support) ---
+SSHD_BIN=$(command -v sshd || echo "/usr/sbin/sshd")
+if [ ! -x "$SSHD_BIN" ]; then
+  echo "Error: sshd binary not found at $SSHD_BIN. Please install OpenSSH."
+  exit 1
+fi
+
 echo "Creating isolated environment for '$INSTANCE_NAME'..."
 mkdir -p "$BASE_DIR"
 
-# Port detection function
+# --- PORT DETECTION ---
 is_port_in_use() {
     local port=$1
     if command -v ss >/dev/null 2>&1; then
@@ -51,35 +71,35 @@ is_port_in_use() {
     fi
 }
 
-# Find the next available port starting from 2222
 PORT=2222
 while is_port_in_use $PORT; do
   PORT=$((PORT+1))
 done
 echo "Found available port: $PORT"
 
-# Generate isolated Host Keys
+# --- CONFIGURATION ---
 echo "Generating host keys..."
 ssh-keygen -t rsa -b 4096 -f "$BASE_DIR/ssh_host_rsa_key" -N "" -q
 ssh-keygen -t ed25519 -f "$BASE_DIR/ssh_host_ed25519_key" -N "" -q
 
-# Generate the isolated sshd_config
 cat <<EOF > "$CONFIG_FILE"
 Port $PORT
 HostKey $BASE_DIR/ssh_host_rsa_key
 HostKey $BASE_DIR/ssh_host_ed25519_key
 
 # Security & Authentication defaults
-PermitRootLogin prohibit-password
+PermitRootLogin no
 PasswordAuthentication yes
 PubkeyAuthentication yes
 AuthorizedKeysFile .ssh/authorized_keys
 
-# Subsystem configuration
+# Restrict to the requested user
+AllowUsers $SSH_USER
+
 Subsystem sftp internal-sftp
 EOF
 
-# Firewall configuration function
+# --- FIREWALL ---
 open_firewall_port() {
     local p=$1
     echo "Configuring firewall for port $p..."
@@ -92,23 +112,19 @@ open_firewall_port() {
         echo " -> Opened port $p using ufw."
     elif command -v iptables >/dev/null 2>&1; then
         iptables -I INPUT -p tcp --dport ${p} -j ACCEPT
-        echo " -> Opened port $p using iptables (Note: this rule won't survive a reboot without iptables-persistent)."
-    else
-        echo " -> Warning: No supported active firewall found. Port $p might need manual opening."
+        echo " -> Opened port $p using iptables."
     fi
 }
-
 open_firewall_port $PORT
 
-# Generate the systemd service file
+# --- SYSTEMD SERVICE ---
 echo "Creating systemd service: $SERVICE_NAME..."
 cat <<EOF > "$SERVICE_FILE"
 [Unit]
-Description=Custom SSHd instance ($INSTANCE_NAME)
+Description=Isolated SSHd instance ($INSTANCE_NAME) restricted to $SSH_USER
 After=network.target auditd.service
 
 [Service]
-# -D prevents sshd from detaching, which systemd prefers for standard services
 ExecStart=$SSHD_BIN -D -f $CONFIG_FILE
 ExecReload=/bin/kill -HUP \$MAINPID
 KillMode=process
@@ -119,18 +135,12 @@ RestartSec=5s
 WantedBy=multi-user.target
 EOF
 
-# Enable and start the service
-echo "Starting and enabling the service..."
 systemctl daemon-reload
 systemctl enable --now "$SERVICE_NAME"
 
 echo "----------------------------------------------------"
-echo "Success! SSH Server '$INSTANCE_NAME' is running and will auto-restart."
+echo "Success! SSH Server '$INSTANCE_NAME' is running."
 echo "Port: $PORT"
-echo "Config: $CONFIG_FILE"
-echo "Service: $SERVICE_NAME"
-echo ""
-echo "To check status: systemctl status $SERVICE_NAME"
-echo "To view logs: journalctl -u $SERVICE_NAME -f"
-echo "To completely remove: systemctl disable --now $SERVICE_NAME && rm $SERVICE_FILE && rm -rf $BASE_DIR"
+echo "Allowed User: $SSH_USER"
+echo "Connect: ssh -p $PORT $SSH_USER@<server-ip>"
 echo "----------------------------------------------------"
