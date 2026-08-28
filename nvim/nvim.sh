@@ -203,6 +203,14 @@ vim.opt.splitbelow = true
 vim.opt.termguicolors = true
 vim.opt.hlsearch = true
 vim.opt.laststatus = 3 -- global statusline (for lualine)
+-- Drops the "N lines, M bytes written" message after :w. Mainly
+-- motivated by hex.nvim's save flow: it runs an xxd filter (which
+-- prints its own "N lines filtered" message) as part of writing, and
+-- the write's own message stacking on top of that is what triggers
+-- Vim's "Press ENTER to continue" prompt after every hex-mode save.
+-- Removing this message means there's only one left, which doesn't
+-- need the prompt.
+vim.opt.shortmess:append("W")
 
 -- Styled window borders between splits (nvim-tree, terminal, etc.)
 vim.opt.fillchars = {
@@ -229,6 +237,27 @@ if vim.fn.has("nvim-0.11") == 1 then
   vim.o.winborder = "rounded"
 end
 
+-- Don't auto-continue comments (// , # , etc.) onto a new line when
+-- pressing Enter in insert mode or o/O in normal mode -- EXCEPT when
+-- the current line is comment-ONLY (nothing but whitespace + the
+-- comment itself, no real code before it), where continuing onto the
+-- next line with the same comment marker is actually convenient
+-- (writing a multi-line comment block) rather than the annoying case
+-- (writing code that happens to have a trailing comment, then hitting
+-- Enter to write MORE code and getting an unwanted comment prefix
+-- inserted). Many filetypes' own ftplugins (e.g. c.vim) set
+-- 'formatoptions' with these flags as part of their own FileType
+-- handling -- this runs on the same event, registered afterward, so
+-- it reliably strips them back off regardless of what a given
+-- filetype's ftplugin set; the <CR> mapping further below re-adds 'r'
+-- for just the one keypress when the comment-only condition applies.
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "*",
+  callback = function()
+    vim.opt_local.formatoptions:remove({ "c", "r", "o" })
+  end,
+})
+
 -- SSH Clipboard Support (OSC 52)
 vim.g.clipboard = {
   name = 'OSC 52',
@@ -249,6 +278,128 @@ vim.g.clipboard = {
 -- Clear search highlight on pressing Esc in normal mode
 vim.keymap.set('n', '<Esc>', '<cmd>nohlsearch<CR>')
 
+-- Is the cursor's current line comment-ONLY -- i.e. its first
+-- non-blank character falls inside a treesitter comment node, meaning
+-- there's no real code before the comment on this line? Using
+-- treesitter's `comment` node type rather than per-filetype regex
+-- (// vs # vs -- etc.) since virtually every grammar names it the
+-- same way, so this works generically across languages rather than
+-- needing a pattern maintained per filetype. Queries a single point
+-- (the first non-blank column) rather than a range spanning the whole
+-- line, since a range query only succeeds if it fits entirely inside
+-- one node -- comment nodes don't always extend to the exact byte
+-- offset a plain string length points at (trailing whitespace,
+-- multi-byte characters), and a point query avoids depending on that.
+local function cursor_line_is_comment_only()
+  local ok, parser = pcall(vim.treesitter.get_parser, 0)
+  if not ok or not parser then
+    return false
+  end
+  local line = vim.api.nvim_get_current_line()
+  local first_col = line:find("%S")
+  if not first_col then
+    return false
+  end
+  local row = vim.api.nvim_win_get_cursor(0)[1] - 1
+  local ok2, tree = pcall(function() return parser:parse()[1] end)
+  if not ok2 or not tree then
+    return false
+  end
+  local col = first_col - 1
+  local node = tree:root():named_descendant_for_range(row, col, row, col + 1)
+  while node do
+    if node:type():match("comment") then
+      return true
+    end
+    node = node:parent()
+  end
+  return false
+end
+
+-- <CR> in insert mode: on a comment-only line, repeats the line's
+-- comment marker (and a single following space, if one was there) on
+-- the new line -- twice in a row with nothing typed in between breaks
+-- out instead of continuing again, matching Vim's own long-standing
+-- convention for this.
+--
+-- This used to reuse Neovim's native comment-leader logic instead, by
+-- temporarily appending 'r' to formatoptions around the <CR>
+-- keypress and reverting it via vim.schedule() afterward -- that
+-- never actually worked: there's no guarantee the scheduled revert
+-- runs AFTER Neovim's own logic gets to read formatoptions during
+-- that same <CR>'s processing, and apparently it ran first every
+-- time, removing 'r' before it could take effect. Computing the
+-- prefix directly and returning it as part of the same keystring
+-- sidesteps that ordering question entirely -- nothing here depends
+-- on when anything else happens to run.
+--
+-- Covers //, #, and -- (C-family/JS/TS/Go, Python/bash/YAML/CMake,
+-- and Lua/SQL respectively) rather than being fully comment-syntax-
+-- agnostic like the detection above -- that's the trade-off for not
+-- depending on formatoptions/'comments' timing.
+--
+-- NOTE: this mapping ends up invoked through nvim-cmp's OWN <CR>
+-- fallback chain, not called directly by Neovim -- cmp.setup() runs
+-- after this file's top-level code and, per its own keymap-
+-- composition system (cmp/utils/keymap.lua), absorbs whatever <CR>
+-- mapping already existed as the function it calls when its
+-- completion menu isn't visible, rather than simply discarding it.
+-- That has two consequences: (1) it still runs under a textlock, so
+-- direct buffer edits like nvim_set_current_line() throw E565 --
+-- fixed below by returning keys instead; (2) it runs on literally
+-- every <CR> press everywhere, including while navigating a LuaSnip
+-- snippet session, which this was never meant to touch at all --
+-- guarded against below by bailing out to a plain <CR> whenever one
+-- is active for the buffer.
+vim.keymap.set('i', '<CR>', function()
+  local ok_ls, luasnip = pcall(require, "luasnip")
+  if ok_ls and luasnip.session.current_nodes[vim.api.nvim_get_current_buf()] then
+    return '<CR>'
+  end
+
+  local line = vim.api.nvim_get_current_line()
+
+  -- Current line is JUST a marker with nothing typed after it (i.e.
+  -- the previous <CR> continued the comment and nothing was added
+  -- since) -- break out: clear the line and start fresh, rather than
+  -- continuing yet again. Without this, pressing Enter repeatedly
+  -- with nothing typed in between just continues forever.
+  --
+  -- <Esc>S (leave insert mode, then substitute-line) rather than
+  -- calling nvim_set_current_line() directly -- direct buffer edits
+  -- aren't allowed from inside this callback (see the textlock note
+  -- above), so the change has to be expressed as keys to feed
+  -- instead, same as the <CR> continuation itself already is.
+  if line:match("^%s*//%s?$") or line:match("^%s*#%s?$") or line:match("^%s*%-%-%s?$") then
+    return '<Esc>S'
+  end
+
+  if cursor_line_is_comment_only() then
+    -- Only the marker itself gets typed onto the new line -- NOT the
+    -- current line's own leading whitespace. The active indent logic
+    -- (cindent, etc.) already indents the new line to match on its
+    -- own; re-typing the captured leading whitespace on top of that
+    -- is what compounded further right on every single Enter before.
+    local prefix = line:match("^%s*(//%s?)")
+      or line:match("^%s*(#%s?)")
+      or line:match("^%s*(%-%-%s?)")
+    if prefix then
+      return '<CR>' .. prefix
+    end
+  end
+  return '<CR>'
+end, { expr = true, desc = "Smart comment-continuing newline" })
+
+-- Clears the current line's content, leaving it as a blank line in
+-- place rather than deleting the line itself (which would shift
+-- everything below it up, like dd does). Motivating case: undoing an
+-- auto-continued comment from the mapping above when you didn't
+-- actually want it, without backspacing it out character by
+-- character.
+vim.keymap.set('n', '<leader>cb', function()
+  vim.api.nvim_set_current_line("")
+end, { desc = "Clear Line (Blank)" })
+
 -- Forced Inline Paste (The behavior you liked)
 -- This forces the pasted text to be treated as characters at your exact cursor position
 vim.keymap.set('n', '<leader>p', function()
@@ -263,6 +414,15 @@ vim.keymap.set("x", "P", '"_dP')
 -- Move lines up and down in visual mode
 vim.keymap.set("v", "J", ":m '>+1<CR>gv=gv", { desc = "Move line down" })
 vim.keymap.set("v", "K", ":m '<-2<CR>gv=gv", { desc = "Move line up" })
+
+-- Move current line/selection up and down with Alt+j/k, across
+-- normal, insert, and visual mode.
+vim.keymap.set('n', '<A-j>', ':m .+1<CR>==', { desc = "Move line down" })
+vim.keymap.set('n', '<A-k>', ':m .-2<CR>==', { desc = "Move line up" })
+vim.keymap.set('i', '<A-j>', '<Esc>:m .+1<CR>==gi', { desc = "Move line down" })
+vim.keymap.set('i', '<A-k>', '<Esc>:m .-2<CR>==gi', { desc = "Move line up" })
+vim.keymap.set('v', '<A-j>', ":m '>+1<CR>gv=gv", { desc = "Move selection down" })
+vim.keymap.set('v', '<A-k>', ":m '<-2<CR>gv=gv", { desc = "Move selection up" })
 
 -- Easy Save
 vim.keymap.set({'n', 'v', 'i'}, '<C-s>', '<cmd>w<CR><Esc>', { desc = "Save File" })
@@ -539,6 +699,206 @@ return {
           side = "right",
           width = 30,
         },
+        -- Routes the paste overwrite/rename CHOICE through
+        -- vim.ui.select tagged with kind = "nvimtree_overwrite_rename"
+        -- (nvim-tree's own documented hook for this), which the gP
+        -- batch-paste below intercepts.
+        select_prompts = true,
+
+        -- Keep nvim-tree's own default mappings and add gP on top of
+        -- them, via the officially documented on_attach recipe --
+        -- rather than the TreeAttachedPost event this used before,
+        -- whose handler is passed the bufnr directly as a plain
+        -- number (confirmed from nvim-tree's own docs), not a table
+        -- with a .buf field -- indexing that number is what threw
+        -- "attempt to index local 'data' (a number value)".
+        on_attach = function(bufnr)
+          local api = require("nvim-tree.api")
+
+          -- The helper that installs the defaults has been named
+          -- differently across versions (api.config.mappings.
+          -- default_on_attach vs the older api.map.on_attach.default)
+          -- -- try both rather than assume one, so this doesn't
+          -- silently lose every default mapping on a version where
+          -- the other name is the real one.
+          if not pcall(api.config.mappings.default_on_attach, bufnr) then
+            pcall(api.map.on_attach.default, bufnr)
+          end
+
+          -- gP: paste, resolving every naming collision in this one
+          -- paste with a single :s///-style pattern/replacement
+          --
+          -- CAVEAT: this assumes a single-file-style overwrite/rename
+          -- choice per conflict. nvim-tree turns out to have a
+          -- SEPARATE, differently-shaped dialog specifically for
+          -- multi-file conflicts in one paste ("N file(s) already
+          -- exist" / Rename (suffix) / Overwrite all / Skip all),
+          -- which this doesn't detect or intercept -- so gP is only
+          -- confirmed reliable for a single conflicting file. For
+          -- "always rename every file, conflict or not" -- which is
+          -- what was actually being asked for -- gM below is the
+          -- better fit: it doesn't touch nvim-tree's paste/conflict
+          -- system at all, just copies marked files directly.
+          -- instead of nvim-tree's normal one-at-a-time
+          -- overwrite/rename prompt per conflicting file. Plain `p`
+          -- (bound above by default_on_attach) is untouched -- this
+          -- is a deliberately separate mapping, not a replacement.
+          --
+          -- nvim-tree doesn't expose a way to enumerate the clipboard
+          -- or pre-scan for collisions before pasting (only
+          -- print/clear it), and conflicts are resolved one at a time
+          -- internally as the paste runs -- there's no "here's the
+          -- whole batch" moment to hook into directly. This gets the
+          -- same practical result a different way: ask ONCE upfront
+          -- for the pattern, then answer nvim-tree's own conflict
+          -- prompts programmatically for the duration of that paste
+          -- using vim.fn.substitute() (real Vim regex, same engine
+          -- :s/// itself uses) against the filename nvim-tree
+          -- pre-fills as its default.
+          --
+          -- vim.ui.select/vim.ui.input are wrapped HERE, at call time
+          -- inside the keymap function, rather than once when this
+          -- plugin's config runs. nvim-tree loads eagerly at startup,
+          -- but dressing.nvim (which ALSO wraps these same two
+          -- functions, to prettify them) loads lazily on VeryLazy,
+          -- afterward -- wrapping once at config time would capture
+          -- the plain pre-dressing versions, which then get silently
+          -- overwritten (discarding this wrapper entirely) once
+          -- dressing finishes loading. Wrapping fresh on every call
+          -- instead always captures whatever's actually active.
+          vim.keymap.set('n', 'gP', function()
+            vim.ui.input({ prompt = "Rename pattern/replacement (Vim regex, e.g. foo/bar): " }, function(input)
+              if not input or input == "" then
+                api.fs.paste()
+                return
+              end
+              local pattern, replacement = input:match("^(.-)/(.*)$")
+              if not pattern then
+                vim.notify("Expected pattern/replacement, e.g. foo/bar", vim.log.levels.WARN)
+                return
+              end
+
+              local real_select = vim.ui.select
+              local real_input = vim.ui.input
+
+              vim.ui.select = function(items, opts, on_choice)
+                if opts and opts.kind == "nvimtree_overwrite_rename" then
+                  for i, item in ipairs(items) do
+                    if tostring(item):lower():match("rename") then
+                      on_choice(item, i)
+                      return
+                    end
+                  end
+                end
+                real_select(items, opts, on_choice)
+              end
+
+              vim.ui.input = function(input_opts, on_confirm)
+                if input_opts and input_opts.default then
+                  local ok, new_name = pcall(vim.fn.substitute, input_opts.default, pattern, replacement, "")
+                  on_confirm(ok and new_name ~= "" and new_name or input_opts.default)
+                  return
+                end
+                real_input(input_opts, on_confirm)
+              end
+
+              -- Restored via a short defer rather than immediately
+              -- after api.fs.paste() returns, since it's not
+              -- confirmed whether paste() resolves every prompt
+              -- synchronously before returning to caller or defers
+              -- some of them -- restoring immediately risked only
+              -- patching the FIRST conflict in a multi-file paste and
+              -- silently falling back to normal prompts for the rest.
+              -- If that's what happens, this assumption is the next
+              -- thing to revisit.
+              api.fs.paste()
+              vim.defer_fn(function()
+                vim.ui.select = real_select
+                vim.ui.input = real_input
+              end, 2000)
+            end)
+          end, { desc = "nvim-tree: Paste (Batch Rename Regex)", buffer = bufnr, silent = true })
+
+          -- Clears the copy/cut clipboard outright. Useful if it's
+          -- holding a stale entry -- a file that's since been
+          -- renamed, moved, or deleted -- which pastes as "ENOENT: no
+          -- such file or directory" until cleared and re-copied fresh.
+          vim.keymap.set('n', 'gC', api.fs.clear_clipboard, { desc = "nvim-tree: Clear Clipboard", buffer = bufnr, silent = true })
+
+          -- gM: copy every MARKED file/folder (toggle a mark with m,
+          -- shown as a star) into the directory under the cursor,
+          -- applying a single :s///-style pattern/replacement to
+          -- EVERY name unconditionally -- not just on collision. This
+          -- is deliberately separate from nvim-tree's own copy/paste
+          -- clipboard (c/x/p/gP above) entirely: it reads the marked
+          -- list via api.marks.list() (a real, documented, stable
+          -- API -- unlike the clipboard, which has no equivalent way
+          -- to enumerate its contents) and shells out to `cp -r` to
+          -- do the actual copying itself, the same approach used in
+          -- nvim-tree's own official custom-copy recipe. Marks are
+          -- left as-is afterward (not auto-cleared), matching how the
+          -- regular clipboard also isn't cleared after a paste --
+          -- toggle them off individually with m if you're done with
+          -- them.
+          vim.keymap.set('n', 'gM', function()
+            local marks = api.marks.list()
+            if not marks or #marks == 0 then
+              vim.notify("No marked files (mark with 'm' first)", vim.log.levels.WARN)
+              return
+            end
+            local cursor_node = api.tree.get_node_under_cursor()
+            if not cursor_node then
+              return
+            end
+            local dest_dir = cursor_node.type == "directory" and cursor_node.absolute_path
+              or vim.fn.fnamemodify(cursor_node.absolute_path, ":h")
+
+            vim.ui.input({ prompt = "Rename pattern/replacement (Vim regex, e.g. Foo/Bar): " }, function(input)
+              if not input or input == "" then
+                return
+              end
+              local pattern, replacement = input:match("^(.-)/(.*)$")
+              if not pattern then
+                vim.notify("Expected pattern/replacement, e.g. Foo/Bar", vim.log.levels.WARN)
+                return
+              end
+              for _, node in ipairs(marks) do
+                if not vim.loop.fs_stat(node.absolute_path) then
+                  -- Marks persist by path in nvim-tree's own state and
+                  -- are NOT cleared when the underlying file/folder is
+                  -- deleted, so a stale mark can point at a path that
+                  -- no longer exists (e.g. you marked it, then deleted
+                  -- it). Clean up the stale mark itself here instead
+                  -- of attempting (and failing) a copy from it.
+                  pcall(api.marks.toggle, node)
+                  vim.notify("Skipped stale mark (no longer exists): " .. node.absolute_path, vim.log.levels.WARN)
+                else
+                  local base = vim.fn.fnamemodify(node.absolute_path, ":t")
+                  local ok, new_name = pcall(vim.fn.substitute, base, pattern, replacement, "")
+                  if not ok or new_name == "" then
+                    new_name = base
+                  end
+                  local dest_path = dest_dir .. "/" .. new_name
+                  if dest_path == node.absolute_path then
+                    -- The pattern didn't match this particular name
+                    -- (so it came back unchanged) and the destination
+                    -- is the same directory the file's already in --
+                    -- that's a copy onto itself, which cp correctly
+                    -- refuses. Skip it up front with a clearer reason
+                    -- instead of surfacing cp's raw "same file" error.
+                    vim.notify("Skipped " .. base .. ": pattern didn't match, and destination is the same as source", vim.log.levels.WARN)
+                  else
+                    local result = vim.fn.system({ "cp", "-r", node.absolute_path, dest_path })
+                    if vim.v.shell_error ~= 0 then
+                      vim.notify("Copy failed for " .. base .. ": " .. result, vim.log.levels.ERROR)
+                    end
+                  end
+                end
+              end
+              api.tree.reload()
+            end)
+          end, { desc = "nvim-tree: Copy Marked (Regex Rename)", buffer = bufnr, silent = true })
+        end,
       })
       vim.keymap.set('n', '<leader>e', ':NvimTreeToggle<CR>', { silent = true, desc = "Toggle File Explorer" })
     end,
@@ -759,6 +1119,40 @@ return {
     end,
   },
 
+  -- Hex file viewer/editor. Toggles between normal and hex-dump view
+  -- (backed by xxd) rather than showing both simultaneously -- that
+  -- trade-off is deliberate: since the hex dump is just ordinary,
+  -- plain buffer text under the hood, editing it gets Neovim's normal
+  -- undo/redo for free, and nothing writes to disk until an explicit
+  -- :w, same as any other file. The only plugin found that does a
+  -- true live simultaneous hex+ASCII view (hexview.nvim, used here
+  -- previously) manages bytes with its own custom logic instead of
+  -- going through normal buffer text editing, which is exactly why it
+  -- has no undo at all -- not a gap that plugin could patch, an
+  -- architectural trade-off against the same thing being fixed here.
+  {
+    "RaafatTurki/hex.nvim",
+    config = function()
+      require("hex").setup()
+      vim.keymap.set('n', '<leader>h', function()
+        if not vim.bo.binary then
+          -- Hex editing depends on the buffer actually being loaded
+          -- as binary. Otherwise Neovim applies normal text encoding/
+          -- line-ending handling to the raw bytes first (NUL bytes
+          -- included, which any real binary is full of) -- that
+          -- misinterpretation is what produces "CONVERSION ERROR"
+          -- rather than a clean hex dump, and it happens BEFORE xxd
+          -- ever runs. Re-reading with ++bin loads the file correctly
+          -- from scratch instead of operating on an already-misread
+          -- buffer. Forced (!) since there's nothing worth preserving
+          -- from a buffer that was misread as text in the first place.
+          vim.cmd('edit! ++bin %')
+        end
+        vim.cmd('HexToggle')
+      end, { desc = "Toggle Hex View" })
+    end,
+  },
+
   -- Nicer notifications (replaces the default vim.notify popups)
   {
     "rcarriga/nvim-notify",
@@ -766,7 +1160,15 @@ return {
       require("notify").setup({
         background_colour = "#000000",
         timeout = 3000,
-        render = "compact",
+        -- Stack upward from the bottom instead of down from the top
+        -- (nvim-notify anchors to the right by default either way),
+        -- so notifications land bottom-right instead of top-right.
+        top_down = false,
+        -- Switched from "compact": that renderer has a documented
+        -- history of text overflow/wrapping bugs, and is the prime
+        -- suspect for the garbled/duplicated text seen in some
+        -- NvimTree error notifications. Not confirmed as the actual
+        -- cause, but worth trying alongside the position change.
       })
       vim.notify = require("notify")
     end,
@@ -1024,6 +1426,33 @@ return {
           { name = "path" },
         }),
       })
+    end,
+  },
+
+  -- Auto-pair brackets/quotes: (), {}, [], "", '' -- nvim-autopairs'
+  -- own defaults. <> was tried here too but removed: it collided too
+  -- much with < and > as comparison operators to be worth keeping.
+  {
+    "windwp/nvim-autopairs",
+    dependencies = { "hrsh7th/nvim-cmp" },
+    config = function()
+      local autopairs = require("nvim-autopairs")
+      -- map_cr defaults to true, which makes nvim-autopairs install
+      -- its OWN insert-mode <CR> mapping (for expanding bracket pairs
+      -- onto their own indented line). That's set during plugin
+      -- loading, which runs after init.lua's own top-level code --
+      -- where the comment-continuation <CR> mapping lives -- so it
+      -- was silently overwriting that mapping entirely regardless of
+      -- what it did internally. Disabled here to free up <CR> for
+      -- that mapping; the trade-off is losing autopairs' own
+      -- brace-expands-on-Enter behavior, which was never explicitly
+      -- asked for.
+      autopairs.setup({ map_cr = false })
+
+      -- Integrates with nvim-cmp so accepting a completion (e.g. a
+      -- function call) doesn't end up with doubled-up parens.
+      local cmp_autopairs = require("nvim-autopairs.completion.cmp")
+      require("cmp").event:on("confirm_done", cmp_autopairs.on_confirm_done())
     end,
   },
 
@@ -1312,30 +1741,286 @@ dap.configurations.c = vim.list_extend(dap.configurations.c or {}, configuration
 return configurations
 EOF
 
-# --- ~/.clang-format ---
-# Personal fallback clang-format style. clang-format walks UP from the
-# file being formatted looking for a .clang-format file; $HOME sits
-# above every project you'll open, so this becomes your default style
-# for any project that doesn't ship its own .clang-format (a project's
-# own file, being closer to the file, always takes precedence over
-# this one). BreakBeforeBraces: Attach keeps braces on the same line
-# as the declaration (K&R), instead of Allman-style braces on their
-# own line.
+# --- ~/.clang-format and ~/.clang-tidy ---
+# Personal fallback style, implementing a specific C/C++ coding style
+# guide (naming conventions, brace style, include ordering, etc. --
+# see the comments in each file below for exactly which guide section
+# each setting maps to). Both tools walk UP from the file being
+# checked/formatted looking for their respective config file; $HOME
+# sits above every project you'll open, so these become your default
+# for any project that doesn't ship its own .clang-format/.clang-tidy
+# (a project's own file, being closer to the file, always takes
+# precedence over these).
 #
-# NOTE: written unconditionally (not "if missing") every run, same as
-# the rest of this config -- an earlier version only wrote this if the
-# file didn't already exist, which meant a stray pre-existing
-# ~/.clang-format (from some other tool, or leftover from before this
-# script managed it) would silently block the fix forever.
+# NOTE: this REPLACES the earlier simpler .clang-format (LLVM +
+# Attach/K&R braces) with a full style-guide implementation -- brace
+# style is intentionally flipped back to Allman here as part of that,
+# since this is a deliberate, complete style guide rather than the
+# earlier ad-hoc preference.
+#
+# <leader>lf (LSP format) only consumes .clang-format -- clangd's
+# formatting is pure clang-format, unrelated to clang-tidy. The
+# .clang-tidy file is picked up separately and automatically by
+# clangd for live diagnostics (clang-tidy integration is on by
+# default in clangd), not by <leader>lf itself.
+#
+# Written unconditionally (not "if missing") every run, same as the
+# rest of this config -- so a stray pre-existing file from some other
+# tool can't silently block these from taking effect.
 cat << 'EOF' > "$HOME/.clang-format"
-BasedOnStyle: LLVM
-BreakBeforeBraces: Attach
-IndentWidth: 4
-ColumnLimit: 100
+# .clang-format
+# Enforces the formatting rules from the C/C++ Coding Style Guide (Part I: C++ Style).
+# Applies equally to Part II C API files per §15 (Indentation and Braces) — same
+# tabs/Allman/line-length rules, just different naming (naming can't be enforced
+# by clang-format; see .clang-tidy and TOOLING.md).
+Language: Cpp
+Standard: Latest
+# --- Indentation (style guide §2) ---
 UseTab: Always
 TabWidth: 4
+IndentWidth: 4
+ContinuationIndentWidth: 4
+IndentCaseLabels: true
+IndentPPDirectives: None
+IndentExternBlock: Indent
+# Access specifiers (public:/private:) sit unindented, flush with the class
+# keyword — only members are indented one level, matching every example in §1/§6.
+AccessModifierOffset: -4
+# Namespace bodies are indented like any other block (style guide §Namespaces).
+NamespaceIndentation: All
+# --- Braces: Allman style everywhere (style guide §3) ---
+BreakBeforeBraces: Allman
+Cpp11BracedListStyle: true
+# InlineOnly (not Empty or None): out-of-class function definitions always
+# get full Allman expansion regardless of length, same as before -- this
+# only additionally allows a function *defined inside a class body* to
+# stay a compact one-liner if it's short enough to fit. That's specifically
+# for the trivial-one-liner exception to "avoid inline member definitions"
+# in Class Member Organization (style guide §6) -- a plain getter like
+# `int getValue() const { return m_value; }` stays inline-and-compact;
+# anything defined out-of-class still always gets the full brace expansion.
+AllowShortFunctionsOnASingleLine: InlineOnly
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortEnumsOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+# No trailing "// namespace X" / "// class X" comments on closing braces
+# (style guide §Namespaces / §6).
+FixNamespaceComments: false
+# --- Pointers and references attach to the type (style guide §4) ---
+PointerAlignment: Left
+ReferenceAlignment: Pointer
+DerivePointerAlignment: false
+# --- Line length (style guide §8) ---
+ColumnLimit: 100
+# --- Spacing (style guide §5) ---
+SpaceBeforeParens: ControlStatements
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+SpaceAfterCStyleCast: false
+SpaceBeforeAssignmentOperators: true
+SpacesInAngles: false
+# --- Include ordering (style guide §7: main header, C headers, C++ std,
+# third-party, project headers) ---
+SortIncludes: true
+SortUsingDeclarations: true
+IncludeBlocks: Regroup
+IncludeIsMainRegex: '(Test)?$'
+IncludeCategories:
+  # 1. Corresponding header is auto-detected and always sorted first.
+  # 2. C system headers wrapped for C++ (<cstdio>, <cstdint>, ...).
+  - Regex: '^<(cassert|cctype|cerrno|cfenv|cfloat|cinttypes|climits|clocale|cmath|csetjmp|csignal|cstdarg|cstddef|cstdint|cstdio|cstdlib|cstring|ctime|cuchar|cwchar|cwctype)>$'
+    Priority: 1
+    CaseSensitive: true
+  # 3. C++ standard library headers (no dot, no slash — <vector>, <memory>, ...).
+  - Regex: '^<[a-z_]+>$'
+    Priority: 2
+    CaseSensitive: true
+  # 4. Third-party / external library headers (<fmt/format.h>, <boost/...>, ...).
+  - Regex: '^<.*>$'
+    Priority: 3
+    CaseSensitive: true
+  # 5. Project headers, quoted ("NetworkManager.hpp", ...).
+  - Regex: '^".*"$'
+    Priority: 4
+    CaseSensitive: true
+# --- Misc ---
+AlignTrailingComments: true
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+# Parameters/arguments: never one-per-line (style guide §8). When a
+# signature/call doesn't fit on one line, keep everything together on a
+# single continuation line if it fits there (AllowAll...OnNextLine), and
+# fall back to packing multiple per line (BinPack...) rather than ever
+# breaking to one per line. This can't force a genuinely long signature
+# to fit within ColumnLimit without wrapping at all -- doing that would
+# require ColumnLimit: 0 project-wide, which would also stop comments and
+# ordinary expressions from ever wrapping. See §8 for the full rule.
+#
+# COMPATIBILITY NOTE: clang-format 20 changed BinPackParameters (and the
+# equivalent for call arguments) from a boolean to an enum, and later
+# versions deprecated it again in favor of a nested PackParameters/
+# PackArguments option. The boolean form below is correct for clang-format
+# through 19 (still the most common version in practice, e.g. Ubuntu
+# 24.04 LTS ships 18). On clang-format 20 or newer, replace `true` with
+# `BinPack` on both lines if you find these are being silently ignored.
+BinPackArguments: true
+BinPackParameters: true
+AllowAllArgumentsOnNextLine: true
+AllowAllParametersOfDeclarationOnNextLine: true
+BreakConstructorInitializers: BeforeColon
+ConstructorInitializerIndentWidth: 4
+PenaltyReturnTypeOnItsOwnLine: 1000
 EOF
-echo "Wrote ~/.clang-format (Attach braces, real tabs)."
+
+cat << 'EOF' > "$HOME/.clang-tidy"
+# .clang-tidy
+# Enforces naming conventions (style guide §1) and a subset of the Language
+# Feature Do's and Don'ts (style guide §10) for C++ code. Place at the repo
+# root for Part I (C++) files. For Part II (C API) files, use the
+# directory-scoped override in c-api/.clang-tidy instead — clang-tidy picks
+# the closest .clang-tidy file up the directory tree, so nesting one there
+# gives that subtree different naming rules without affecting the rest of
+# the project. See TOOLING.md for what this file can't check.
+#
+# readability-redundant-inline-specifier is a narrow, complementary aid for
+# the "avoid inline member definitions" rule in §6 (Class Member
+# Organization): it only catches an explicit `inline` keyword that's
+# already redundant (e.g. on a function defined in the class body, which
+# is implicitly inline regardless). It does not catch — and nothing in
+# this file catches — an inline definition that omits the keyword
+# entirely, which is the actual, common case the style guide rule is
+# about; that one stays a code-review judgment call. See TOOLING.md.
+Checks: >
+  -*,
+  readability-identifier-naming,
+  readability-redundant-inline-specifier,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-equals-default,
+  modernize-use-equals-delete,
+  modernize-loop-convert,
+  modernize-concat-nested-namespaces,
+  modernize-use-default-member-init,
+  modernize-avoid-c-arrays,
+  modernize-use-nodiscard,
+  cppcoreguidelines-special-member-functions,
+  cppcoreguidelines-owning-memory,
+  cppcoreguidelines-no-malloc,
+  cppcoreguidelines-pro-type-member-init,
+  cppcoreguidelines-pro-type-cstyle-cast,
+  cppcoreguidelines-macro-usage,
+  performance-unnecessary-value-param,
+  performance-unnecessary-copy-initialization,
+  bugprone-exception-escape,
+  bugprone-use-after-move
+WarningsAsErrors: ''
+HeaderFilterRegex: '.*\.hpp$'
+FormatStyle: file
+CheckOptions:
+  # --- Naming Conventions — style guide §1 ---
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+  - key: readability-identifier-naming.ClassCase
+    value: CamelCase
+  - key: readability-identifier-naming.StructCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumCase
+    value: CamelCase
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: camelBack
+  - key: readability-identifier-naming.MethodCase
+    value: camelBack
+  - key: readability-identifier-naming.VariableCase
+    value: camelBack
+  - key: readability-identifier-naming.LocalVariableCase
+    value: camelBack
+  - key: readability-identifier-naming.ParameterCase
+    value: camelBack
+  # A plain local `const` (not `static`, not `constexpr`) stays under the
+  # Local Variables rule (camelCase) per the style guide's own note that
+  # only *global/static* const/constexpr values are "constants" for this
+  # rule's purposes -- without this, it silently inherits the general
+  # ConstantCase (PascalCase) fallback below instead, which would flag
+  # totally ordinary code like `const std::string name = ...;` inside a
+  # function. StaticConstantCase/GlobalConstantCase/ConstexprVariableCase
+  # below are unaffected and still require PascalCase, matching the guide.
+  - key: readability-identifier-naming.LocalConstantCase
+    value: camelBack
+  # Private/protected member variables: camelCase with an m_ prefix.
+  - key: readability-identifier-naming.PrivateMemberCase
+    value: camelBack
+  - key: readability-identifier-naming.PrivateMemberPrefix
+    value: m_
+  - key: readability-identifier-naming.ProtectedMemberCase
+    value: camelBack
+  - key: readability-identifier-naming.ProtectedMemberPrefix
+    value: m_
+  # Public members (e.g. plain data structs) — camelCase, no prefix.
+  - key: readability-identifier-naming.PublicMemberCase
+    value: camelBack
+  # Static class data members — camelCase with an s_ prefix (distinct from
+  # instance members above). "ClassMember" is clang-tidy's category for
+  # static (non-const) data members specifically.
+  - key: readability-identifier-naming.ClassMemberCase
+    value: camelBack
+  - key: readability-identifier-naming.ClassMemberPrefix
+    value: s_
+  # Global (namespace/file-scope, mutable) variables — camelCase with a g_
+  # prefix, to flag genuinely global mutable state at every use site.
+  - key: readability-identifier-naming.GlobalVariableCase
+    value: camelBack
+  - key: readability-identifier-naming.GlobalVariablePrefix
+    value: g_
+  # Static variables — function-local `static` or file-scope `static` —
+  # camelCase with an s_ prefix, for the same reason as globals above.
+  - key: readability-identifier-naming.StaticVariableCase
+    value: camelBack
+  - key: readability-identifier-naming.StaticVariablePrefix
+    value: s_
+  # Constants and enum values — PascalCase (style guide §1 table).
+  - key: readability-identifier-naming.ConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.GlobalConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.StaticConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.ClassConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConstexprVariableCase
+    value: CamelCase
+  # Template parameters — PascalCase (e.g. ValueType).
+  - key: readability-identifier-naming.TemplateParameterCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypeTemplateParameterCase
+    value: CamelCase
+  # Type aliases / typedefs — PascalCase, matching class naming.
+  - key: readability-identifier-naming.TypeAliasCase
+    value: CamelCase
+  - key: readability-identifier-naming.TypedefCase
+    value: CamelCase
+  # Macros — ALL_CAPS_SNAKE_CASE (the one deliberate exception in §1).
+  - key: readability-identifier-naming.MacroDefinitionCase
+    value: UPPER_CASE
+  # --- cppcoreguidelines-owning-memory — style guide §10, Memory and Ownership ---
+  # Flags raw new/delete and legacy C allocators used for ownership instead of
+  # std::unique_ptr / std::shared_ptr.
+  - key: cppcoreguidelines-owning-memory.LegacyResourceProducers
+    value: 'malloc;calloc;realloc;strdup;strndup'
+  - key: cppcoreguidelines-owning-memory.LegacyResourceConsumers
+    value: 'free;realloc'
+  # --- cppcoreguidelines-macro-usage — style guide §10, prefer constexpr over #define ---
+  # Allow include-guard-style and project-prefixed macros; flag everything else
+  # that could instead be a constexpr constant.
+  - key: cppcoreguidelines-macro-usage.AllowedRegexp
+    value: '^[A-Z0-9_]+_H(PP)?$'
+  - key: cppcoreguidelines-macro-usage.CheckCapsOnly
+    value: false
+EOF
+echo "Wrote ~/.clang-format and ~/.clang-tidy (Allman braces, real tabs)."
 
 echo "========================================="
 echo " Setup Complete!"
