@@ -199,7 +199,7 @@ Neovim's embedded terminal launches **fish** instead of your login shell, purely
 
 `<leader>h` toggles the current buffer between normal and hex-dump view (backed by `xxd`), rather than showing both simultaneously. That's deliberate: the hex dump is just ordinary buffer text under the hood, so editing it gets normal Neovim undo/redo for free, and nothing writes to disk until an explicit `:w` — same as any other file. A plugin doing a true live simultaneous hex+ASCII view was tried first, but it manages bytes with its own logic outside normal buffer editing, which is exactly why it had no undo at all.
 
-The mapping also makes sure the buffer is actually loaded in binary mode before toggling (re-reading it with `++bin` if not) — opening a real binary file without that causes Neovim to misinterpret raw bytes as text before `xxd` even runs, surfacing as a `CONVERSION ERROR` instead of a clean hex dump.
+The mapping also makes sure the buffer is actually loaded in binary mode before toggling (re-reading it with `++bin` if not) — opening a real binary file without that causes Neovim to misinterpret raw bytes as text before `xxd` even runs, surfacing as a `CONVERSION ERROR` instead of a clean hex dump. Since that reload discards whatever's currently in the buffer, `<leader>h` refuses to run it if there are unsaved changes — save (or explicitly discard with `:e!`) first.
 
 ## Formatting and linting
 

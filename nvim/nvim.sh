@@ -1144,8 +1144,18 @@ return {
           -- rather than a clean hex dump, and it happens BEFORE xxd
           -- ever runs. Re-reading with ++bin loads the file correctly
           -- from scratch instead of operating on an already-misread
-          -- buffer. Forced (!) since there's nothing worth preserving
-          -- from a buffer that was misread as text in the first place.
+          -- buffer.
+          --
+          -- That reload is forced (!), which discards whatever's
+          -- currently in the buffer without asking -- refuse to do it
+          -- if there are unsaved changes rather than silently losing
+          -- them. Only relevant on this first switch into hex mode:
+          -- once vim.bo.binary is already true, no reload happens and
+          -- this check doesn't apply.
+          if vim.bo.modified then
+            vim.notify("Buffer has unsaved changes -- save first (or :e! to discard) before opening hex view", vim.log.levels.WARN)
+            return
+          end
           vim.cmd('edit! ++bin %')
         end
         vim.cmd('HexToggle')
