@@ -85,7 +85,14 @@ Package names vary by distro (see the script for the exact list per package mana
 
 - **Theme**: `tokyonight` (night variant), customized to a pure black background, with custom colors for error/warn/info/hint diagnostic virtual lines.
 - **Dashboard**: `alpha-nvim` start screen with quick actions — find file, recent files, live grep, new file, edit config, quit.
-- **Statusline**: `lualine`, themed to match, shows mode, git branch, diagnostics, filename, encoding/filetype, progress, and cursor location.
+- **Statusline**: `lualine`, styled with true Powerline arrow separators (the seamless, edge-to-edge kind — between sections, a thinner version between components within a section). Left to right:
+  - Mode, plus a macro-recording indicator (`● REC @<register>`) that only appears while a macro is actually being recorded.
+  - Git branch and a diff summary (added/changed/removed), grouped together as one git cluster instead of being split across the line.
+  - File-type icon fused directly to the filename with no separator between them — it reads as one unit rather than a boxed-off icon — plus a `●` for unsaved changes and `[RO]` for read-only buffers.
+  - Search count, diagnostics, the name(s) of any attached LSP client(s), and a word count that only shows up on prose filetypes (markdown, text, tex, commit messages).
+  - Progress, cursor location, and the file's encoding/line-ending — but only when they differ from Neovim's own defaults (utf-8, unix), so a normal file doesn't clutter the line confirming the obvious.
+  - A clock with the abbreviated weekday.
+  - The Powerline glyphs live in the E0B0–E0B3 Unicode range, part of the same Nerd Font patch as the file/branch icons elsewhere in the statusline — if the icons render, the arrows will too. If they instead show as boxes or `?`, it means the terminal's font setting isn't pointed at the *patched* font family specifically (Nerd Fonts rename it, e.g. "CaskaydiaCove Nerd Font" rather than plain "Cascadia Code"). Verify with `echo -e "\ue0b0"` in a terminal, outside Neovim entirely — if that's blank, fix the terminal's font setting rather than the config.
 - **Indent guides**: `indent-blankline` — colored guide per indent level, plus the current lexical scope (the block your cursor is inside) is highlighted with its own guide color. The underline that used to mark the scope's start/end line is disabled (`show_start`/`show_end = false`) — just the colored guide remains.
 - **Inline color previews**: `nvim-colorizer` shows hex/rgb color values with their actual color as a background.
 - **Notifications**: `nvim-notify` replaces the default notification popups with floating, styled ones, positioned bottom-right.

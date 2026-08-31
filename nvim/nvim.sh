@@ -1047,17 +1047,117 @@ return {
       require("lualine").setup({
         options = {
           theme = "tokyonight",
-          component_separators = { left = "│", right = "│" },
-          section_separators = { left = "", right = "" },
+          -- Powerline private-use-area glyphs (E0B0-E0B3). This needs
+          -- the terminal's font actually set to the PATCHED family
+          -- (e.g. "JetBrainsMono Nerd Font" / "CaskaydiaCove Nerd
+          -- Font", not plain "JetBrains Mono"/"Cascadia Code") -- if
+          -- these render as boxes/question marks, that's the fix.
+          -- The thin variants (E0B1/E0B3) are used between components
+          -- within a section so they pick up each component's colors
+          -- instead of a fixed one.
+          -- Powerline glyphs U+E0B0-U+E0B3, written as raw UTF-8 byte
+          -- escapes (not literal characters) so they can't get
+          -- silently stripped by an editor/tool that mishandles
+          -- Private Use Area codepoints.
+          component_separators = { left = "\238\130\177", right = "\238\130\179" },
+          section_separators = { left = "\238\130\176", right = "\238\130\178" },
           globalstatus = true,
         },
         sections = {
-          lualine_a = { "mode" },
-          lualine_b = { "branch", "diagnostics" },
-          lualine_c = { { "filename", path = 1 } },
-          lualine_x = { "encoding", "filetype" },
-          lualine_y = { "progress" },
-          lualine_z = { "location" },
+          lualine_a = {
+            "mode",
+            -- Only appears while recording a macro -- `cond` hides
+            -- the component (and its separator) entirely the rest of
+            -- the time, so it doesn't sit there empty.
+            {
+              function()
+                return "\226\151\143 REC @" .. vim.fn.reg_recording()
+              end,
+              cond = function()
+                return vim.fn.reg_recording() ~= ""
+              end,
+              color = { fg = "#e0af68", gui = "bold" },
+            },
+          },
+          lualine_b = {
+            -- Icon is baked into lualine's own "branch" component --
+            -- nothing authored here, so no glyph-encoding risk.
+            { "branch" },
+            -- Moved in next to branch (was in lualine_x) so all the
+            -- git state reads as one cluster instead of being split
+            -- across opposite ends of the line.
+            { "diff" },
+          },
+          lualine_c = {
+            -- separator = "" fuses this to the filename that follows
+            -- instead of leaving the icon boxed off by its own arrow
+            -- on both sides.
+            { "filetype", icon_only = true, padding = { left = 1, right = 0 }, separator = "" },
+            {
+              "filename",
+              path = 0,
+              symbols = { modified = " \226\151\143", readonly = " [RO]", unnamed = "[No Name]" },
+            },
+          },
+          lualine_x = {
+            "searchcount",
+            "diagnostics",
+            -- Attached LSP client name(s) -- hidden via `cond` when
+            -- nothing's attached to the buffer.
+            {
+              function()
+                local names = {}
+                for _, client in ipairs(vim.lsp.get_clients({ bufnr = 0 })) do
+                  table.insert(names, client.name)
+                end
+                return "\239\128\147 " .. table.concat(names, ", ")
+              end,
+              cond = function()
+                return #vim.lsp.get_clients({ bufnr = 0 }) > 0
+              end,
+            },
+            -- Word count, only for prose filetypes -- noise anywhere
+            -- else, so it's gated the same way.
+            {
+              function()
+                return "\194\182 " .. vim.fn.wordcount().words
+              end,
+              cond = function()
+                local ft = vim.bo.filetype
+                return ft == "markdown" or ft == "text" or ft == "gitcommit" or ft == "tex"
+              end,
+            },
+          },
+          lualine_y = {
+            "progress",
+            "location",
+            -- Encoding/line-ending: only shown when they DIFFER from
+            -- Neovim's own defaults (utf-8, unix) -- surfaces the
+            -- unusual case instead of confirming the boring default
+            -- on every single file.
+            {
+              function()
+                local enc = vim.bo.fileencoding ~= "" and vim.bo.fileencoding or vim.o.encoding
+                local parts = {}
+                if enc ~= "utf-8" then
+                  table.insert(parts, enc)
+                end
+                if vim.bo.fileformat ~= "unix" then
+                  table.insert(parts, vim.bo.fileformat)
+                end
+                return table.concat(parts, " ")
+              end,
+              cond = function()
+                local enc = vim.bo.fileencoding ~= "" and vim.bo.fileencoding or vim.o.encoding
+                return enc ~= "utf-8" or vim.bo.fileformat ~= "unix"
+              end,
+            },
+          },
+          lualine_z = {
+            function()
+              return " " .. os.date("%a %H:%M")
+            end,
+          },
         },
       })
     end,
