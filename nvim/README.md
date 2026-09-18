@@ -1,6 +1,6 @@
 # Neovim Setup
 
-A single-script Neovim configuration built around C/C++ development (CMake + clangd + codelldb), with LSP support for Go, C#, TypeScript/JavaScript, HTML, and CSS alongside it.
+A scripted Neovim setup built around C/C++ development (CMake + clangd + codelldb), with LSP support for Go, C#, TypeScript/JavaScript, HTML, and CSS alongside it. `setup_neovim.sh` handles installing dependencies and putting everything in place; the actual config lives in `config/` as plain files, not embedded in the script.
 
 Supports **Fedora, Ubuntu, Debian, and Arch Linux** (and their common derivatives — Pop!_OS, Linux Mint, Manjaro, EndeavourOS, etc. — via `/etc/os-release`'s `ID_LIKE`) — the script detects which one you're on and uses the right package manager and package names automatically.
 
@@ -8,12 +8,14 @@ Supports **Fedora, Ubuntu, Debian, and Arch Linux** (and their common derivative
 
 - [Installing](#installing)
 - [What gets installed](#what-gets-installed)
+- [Terminal vs. desktop (Neovide)](#terminal-vs-desktop-neovide)
 - [Editor basics](#editor-basics)
 - [Look & feel](#look--feel)
 - [Buffers & tabs](#buffers--tabs-bufferline)
 - [Text search (Telescope)](#text-search-telescope)
 - [File explorer (nvim-tree)](#file-explorer-nvim-tree)
 - [LSP & code intelligence](#lsp--code-intelligence)
+- [Rule-of-five boilerplate](#rule-of-five-boilerplate)
 - [Autocompletion & snippets](#autocompletion--snippets)
 - [Documentation generation](#documentation-generation)
 - [Debugging (nvim-dap)](#debugging-nvim-dap)
@@ -30,12 +32,14 @@ chmod +x setup_neovim.sh
 ./setup_neovim.sh
 ```
 
+Keep `setup_neovim.sh` and the `config/` folder next to each other — the script only installs dependencies and copies `config/`'s contents into place; it exits with an error if it can't find `config/` beside itself. To customize anything (keymaps, plugins, the theme, the clang-tidy/format rules), edit the files under `config/` directly rather than the script — see [What gets installed](#what-gets-installed) for where each one ends up.
+
 **This deletes `~/.config/nvim` and `~/.local/share/nvim` before writing the new config** — there is no backup step. If you have an existing Neovim setup you care about, copy it elsewhere first.
 
 The script:
-1. Detects your distro and installs system packages via the right manager (`dnf`/`apt`/`pacman`), plus two Nerd Fonts (JetBrainsMono, Cascadia Code) for icon glyphs.
+1. Detects your distro, asks which Neovim frontend(s) you want (see [Terminal vs. desktop (Neovide)](#terminal-vs-desktop-neovide)), and installs system packages via the right manager (`dnf`/`apt`/`pacman`), plus two Nerd Fonts (JetBrainsMono, Cascadia Code) for icon glyphs.
 2. Wipes and rewrites `~/.config/nvim`.
-3. Writes personal `~/.clang-format`/`~/.clang-tidy` fallbacks (see [Formatting and linting](#formatting-and-linting)).
+3. Copies personal `~/.clang-format`/`~/.clang-tidy` fallbacks and `~/cpp-style-guide.md` into place (see [Formatting and linting](#formatting-and-linting)).
 
 First launch takes a minute or two: `lazy.nvim` bootstraps itself and installs all plugins, then Mason installs the language servers and `codelldb`.
 
@@ -45,6 +49,7 @@ First launch takes a minute or two: `lazy.nvim` bootstraps itself and installs a
 - **Ubuntu/Debian**: `fd-find`'s binary is named `fdfind` (a package-name clash with something unrelated), not `fd` like on Fedora/Arch. The script symlinks `~/.local/bin/fd` to it so anything expecting a plain `fd` on `PATH` (e.g. Telescope's file finder) works the same as everywhere else — make sure `~/.local/bin` is actually on your `PATH`.
 - **Arch**: the script runs a full `pacman -Syu` before installing anything new, per Arch's own guidance against partial upgrades — this does mean it'll upgrade your existing packages too, not just add new ones.
 - **Older distro releases** (Debian stable, older Ubuntu LTS): this config relies on Neovim 0.11+ APIs throughout. If your distro's packaged Neovim is older, the script prints a warning after install — see [Neovim's install docs](https://github.com/neovim/neovim/blob/master/INSTALL.md) for an AppImage/PPA/prebuilt build if so.
+- **Neovide** (if you choose it — see [Terminal vs. desktop (Neovide)](#terminal-vs-desktop-neovide)): Arch installs the packaged `neovide` binary directly; Fedora and Debian/Ubuntu have no native package for it, so the script builds it from source via `cargo` (installing Rust via `rustup` first if `cargo` isn't already on `PATH`), per [Neovide's own install docs](https://neovide.dev/installation.html#linux-source). This can take several minutes and, like the .NET SDK step, is best-effort — a failed build prints a warning rather than stopping the rest of the script.
 
 ## What gets installed
 
@@ -54,6 +59,31 @@ Package names vary by distro (see the script for the exact list per package mana
 - **CLI tools**: ripgrep, fd, git, curl, wget, unzip, fish (used only for Neovim's embedded terminal — see [Terminal](#terminal))
 - **Language servers**: clangd, gopls, omnisharp, ts_ls, html, cssls (via Mason), plus `typescript-language-server` and `vscode-langservers-extracted` via npm
 - **Debug adapter**: codelldb (auto-installed by Mason on first debug session)
+- **Neovide**, optionally — see [Terminal vs. desktop (Neovide)](#terminal-vs-desktop-neovide)
+
+Everything the script *writes* rather than installs comes from `config/`, copied into place as-is:
+
+| `config/` | Copied to |
+|---|---|
+| `nvim/init.lua`, `nvim/lua/plugins/init.lua`, `nvim/lua/dap/configurations/cmake.lua` | `~/.config/nvim/...` (same layout) |
+| `clang-format` | `~/.clang-format` |
+| `clang-tidy` | `~/.clang-tidy` |
+| `cpp-style-guide.md` | `~/cpp-style-guide.md` |
+
+## Terminal vs. desktop (Neovide)
+
+The installer asks which Neovim frontend(s) to set up:
+
+1. **Terminal-based only** — just `nvim`, run inside whatever terminal emulator you already use. This is the default if the script is run non-interactively (piped rather than executed directly).
+2. **Desktop application only** — installs [Neovide](https://neovide.dev/) on top. Neovide is a separate GUI window, but it isn't a separate editor — it runs the real `nvim` binary as its backend, so that's installed either way regardless of which option you pick.
+3. **Both.**
+
+There's only one config either way (`config/nvim/`) — Neovide reads the exact same `init.lua`, so keymaps, plugins, and the LSP setup are all identical between the two. Two things differ between them — cursor animation and background transparency — and the config detects which frontend it's running under (`vim.g.neovide`) and picks the right mechanism for each automatically:
+
+- **Terminal**: [`smear-cursor.nvim`](https://github.com/sphamba/smear-cursor.nvim) draws the animated cursor trail — a terminal has no native equivalent, so this fills that gap. `koda.nvim`'s `transparent` option is on, clearing highlight-group backgrounds so whatever the *terminal emulator* draws behind Neovim shows through — including a background image, if your terminal supports one (e.g. kitty's own `background_image` setting). That's a terminal-level feature this config has no reach into; without it configured on the terminal side, transparency here just shows the terminal's normal background color, which is a harmless no-op look.
+- **Neovide**: uses Neovide's own built-in, GPU-accelerated cursor VFX (`railgun` mode) instead of smear-cursor.nvim — running both at once would be two different animation systems fighting over the same cursor, so smear-cursor.nvim doesn't even load when `vim.g.neovide` is set. For background: Neovide has no background-image setting at all — two attempts to add one ([neovide/neovide#2419](https://github.com/neovide/neovide/pull/2419), [#3067](https://github.com/neovide/neovide/pull/3067)) were both closed as abandoned, most recently in October 2025; the feature request itself ([neovide/neovide#342](https://github.com/neovide/neovide/issues/342)) is still open. `vim.g.neovide_opacity` (set to `0.9`) is the closest real substitute — it makes the whole window translucent, so on a compositing window manager, whatever's behind it (your desktop wallpaper, if Neovide isn't covering the whole screen) blends through. Adjust or remove it in `init.lua` to taste.
+
+Once installed, launch the desktop app with `neovide` from a terminal — if that command isn't found right after setup, open a new shell first (a fresh `rustup` install updates `PATH` via shell startup files, which the setup script's own shell won't have re-read).
 
 ## Editor basics
 
@@ -75,6 +105,9 @@ Package names vary by distro (see the script for the exact list per package mana
 | `J` / `K` | Visual | Move selected lines down / up |
 | `<A-j>` / `<A-k>` | Normal/Insert/Visual | Move current line (or selection) down / up |
 | `<leader>cb` | Normal | Clear the current line's content, leaving it blank in place (doesn't delete the line itself) |
+| `gcc` / `gc{motion}` | Normal | Toggle comment on the current line / over a motion (e.g. `gcip` for a paragraph) — Neovim's native 0.10+ commenting, untouched |
+| `gc` | Visual | Toggle comment on the selection |
+| `<leader>c/` | Normal/Visual | Same toggle as `gcc`/`gc` above, as a second which-key-discoverable entry point under the "Comments" group |
 | `<C-s>` | Normal/Visual/Insert | Save file |
 | `<C-h/j/k/l>` | Normal | Move to left/lower/upper/right window |
 | `<leader>sv` / `<leader>sh` | Normal | Split vertically / horizontally |
@@ -83,7 +116,8 @@ Package names vary by distro (see the script for the exact list per package mana
 
 ## Look & feel
 
-- **Theme**: `tokyonight` (night variant), customized to a pure black background, with custom colors for error/warn/info/hint diagnostic virtual lines.
+- **Theme**: [`koda.nvim`](https://github.com/oskarnurm/koda.nvim) (dark variant), nudged to a near-black background, with custom colors for error/warn/info/hint diagnostic virtual lines.
+- **Cursor animation**: an animated cursor trail in both frontends, via different mechanisms — see [Terminal vs. desktop (Neovide)](#terminal-vs-desktop-neovide) for which plugin does what and why.
 - **Dashboard**: `alpha-nvim` start screen with quick actions — find file, recent files, live grep, new file, edit config, quit.
 - **Statusline**: `lualine`, styled with true Powerline arrow separators (the seamless, edge-to-edge kind — between sections, a thinner version between components within a section). Left to right:
   - Mode, plus a macro-recording indicator (`● REC @<register>`) that only appears while a macro is actually being recorded.
@@ -138,7 +172,7 @@ Setting an explicit `<F1>` mapping here also overrides Neovim's built-in `<F1>`-
 
 ## LSP & code intelligence
 
-Configured servers: **clangd** (C/C++), **gopls** (Go), **omnisharp** (C#), **ts_ls** (TS/JS), **html**, **cssls**. Diagnostics render as virtual lines above the offending line (not inline virtual text), with the message's leading category prefix stripped; diagnostic underlines are off.
+Configured servers: **clangd** (C/C++), **gopls** (Go), **omnisharp** (C#), **ts_ls** (TS/JS), **html**, **cssls**. Diagnostics render as virtual lines directly below the offending line (not inline virtual text), with the message's leading category prefix stripped; diagnostic underlines are off.
 
 | Key | Action |
 |---|---|
@@ -146,11 +180,35 @@ Configured servers: **clangd** (C/C++), **gopls** (Go), **omnisharp** (C#), **ts
 | `gD` | Go to declaration. Same `#include`-awareness and fallback as `gd`. |
 | `gr` | Find all references, in a fuzzy picker with preview. |
 | `K` | Hover documentation (renders Doxygen comments if present). |
-| `<leader>lr` | Rename symbol (prompts for new name, safe against double-firing) |
-| `<leader>la` | Code actions |
+| `<leader>lr` | Rename symbol (prompts for new name, safe against double-firing, refuses macros/namespaces — see note below) |
+| `<leader>la` | Code actions at the cursor (normal mode) or over a selection (visual mode — needed for tweaks like Extract Function/Variable, which require an actual range). Also catches a diagnostic one line above/below the cursor, not just the exact line — see note below. |
+| `<leader>lt` | Run `clang-tidy --fix` on the file directly (not through clangd — see [Formatting and linting](#formatting-and-linting) for why), then reload the buffer |
 | `<leader>lf` | Format file (via clangd/LSP formatting — see [Formatting and linting](#formatting-and-linting) for the style used) |
 | `<leader>li` | Show LSP client info |
+| `]d` / `[d` | Jump to next/previous diagnostic, any severity |
+| `]e` / `[e` | Jump to next/previous error |
+| `]w` / `[w` | Jump to next/previous warning |
+| `]t` / `[t` | Jump to next/previous tip (LSP's "Hint" severity) |
 | `<leader>cd` | Generate a Doxygen-style comment block — see [Documentation generation](#documentation-generation) |
+
+**On `<leader>la` coming up thin:** clangd's code actions — and most of its clang-tidy checks — need real compiler flags (`-std=`, `-I`, defines) to do full semantic analysis. Without a `compile_commands.json` in the project, clangd falls back to guessed flags and the action list shrinks accordingly, often down to "No code actions available" everywhere. Generate one via CMake (`-DCMAKE_EXPORT_COMPILE_COMMANDS=ON`, then symlink or copy `build/compile_commands.json` to the project root) or `bear` for non-CMake projects.
+
+**`<leader>lt` and the same compile database:** `<leader>lt` runs the standalone `clang-tidy` binary rather than going through clangd's code actions, so it never comes back "No code actions available" — it always runs. But it looks for that same `compile_commands.json` on its own (passed via clang-tidy's `-p` flag, found the same way as above), for the same underlying reason clangd wants one: without it, clang-tidy falls back to guessed flags and can miss checks that need real semantic analysis. It also uses `--fix` rather than `--fix-errors`, so it deliberately leaves the file untouched if clang-tidy hits real compiler errors, instead of forcing fixes onto code that doesn't currently compile.
+
+**`<leader>lr` and macros/namespaces:** clangd doesn't support renaming macros or namespaces at all ([clangd/clangd#1890](https://github.com/clangd/clangd/issues/1890), still open) — it's supposed to just reply with an error, but has a separate crash bug where it can take the whole `clangd` process down (SIGSEGV) while handling that rejection instead. `<leader>lr` checks with treesitter whether the cursor is on a macro or namespace's own definition line first and refuses locally if so, before clangd ever sees the request. That catches the common case, but not every one — renaming a macro from where it's *used* rather than defined still reaches clangd, since a macro usage is just plain text to treesitter. If clangd crashes anyway, `:LspRestart` brings it back; renaming a macro with `:%s/\<old\>/new/g` is the right tool regardless, since it's pure text substitution with no scope for clangd to resolve.
+
+**A second, unrelated way to come up empty:** cursor position. `<leader>la`'s underlying LSP request is normally scoped to diagnostics on the *exact* cursor line — easy to miss given that virtual_lines (see [Look & feel](#look--feel)) renders a diagnostic's message as an extra line directly below its own line, i.e. right where the next real line of code sits, making it look like it "belongs" to wherever the cursor already is. `<leader>la` now also catches a diagnostic one line above or below the cursor for exactly this reason, so this should come up much less than before — but for anything further away, jump to it first with `]e`/`]w`/`]t` (see the diagnostic-navigation rows above) before requesting code actions.
+
+## Rule-of-five boilerplate
+
+On a C++ buffer, `<leader>oc` / `<leader>om` insert the copy or move constructor + assignment operator pair, defaulted, for whichever class or struct the cursor is currently inside:
+
+```cpp
+Foo(const Foo&) = default;
+Foo& operator=(const Foo&) = default;
+```
+
+The enclosing class is found via Treesitter by walking up from the cursor — no need to have the class's own name line in view, and nested classes resolve to the innermost one. `= default` covers the overwhelming majority of real rule-of-five cases; delete it and write a body for the rare one that needs custom logic. C++ only (no move semantics in C, so this doesn't apply to `.c` buffers).
 
 ## Autocompletion & snippets
 
@@ -210,9 +268,9 @@ The mapping also makes sure the buffer is actually loaded in binary mode before 
 
 ## Formatting and linting
 
-`~/.clang-format` and `~/.clang-tidy` are both written on every run, implementing a specific C/C++ coding style guide (naming conventions, Allman braces, real tabs, include ordering, and a curated set of modernize/cppcoreguidelines/bugprone clang-tidy checks — see the comments in each file for exactly which style guide section a given setting maps to). Both tools walk upward from the file being checked looking for their config file; since `$HOME` sits above every project, these act as your personal default for any project that doesn't ship its own `.clang-format`/`.clang-tidy` — a project's own file always takes precedence.
+`~/.clang-format` and `~/.clang-tidy` are both copied from `config/` on every run, implementing a specific C/C++ coding style guide (naming conventions, Allman braces, real tabs, include ordering, and a curated set of modernize/cppcoreguidelines/bugprone clang-tidy checks — see the comments in each file for exactly which style guide section a given setting maps to, and `config/cpp-style-guide.md` — also copied, to `~/cpp-style-guide.md` — for the guide itself). Both tools walk upward from the file being checked looking for their config file; since `$HOME` sits above every project, these act as your personal default for any project that doesn't ship its own `.clang-format`/`.clang-tidy` — a project's own file always takes precedence.
 
-`<leader>lf` (LSP format) only consumes `.clang-format` — clangd's formatting is pure clang-format and has nothing to do with clang-tidy. `.clang-tidy` is picked up separately and automatically by clangd for live diagnostics, since clangd's clang-tidy integration is on by default.
+`<leader>lf` (LSP format) only consumes `.clang-format` — clangd's formatting is pure clang-format and has nothing to do with clang-tidy. `.clang-tidy` is picked up two separate ways: automatically by clangd for live diagnostics (clangd's clang-tidy integration is explicitly enabled via `--clang-tidy`, alongside `--background-index` so checks run against the whole project's semantic info rather than just what's open), and directly by `<leader>lt`, which shells out to the real `clang-tidy --fix` on the file instead of going through clangd. That's a deliberate difference, not an oversight: clangd filters code actions by LSP "kind", and clang-tidy fixes only ever surface from clangd as individual `quickfix` actions — one per diagnostic — never as a single batched "fix everything" action, because clangd doesn't implement the `source.fixAll` kind that would take ([clangd/clangd#1446](https://github.com/clangd/clangd/issues/1446)). Asking for that kind specifically is why this used to just return "No code actions available" no matter what the file contained. Running the actual `clang-tidy` binary sidesteps that entirely and does what the key was always meant to: fix everything the tool can in one pass. See the [LSP table](#lsp--code-intelligence) above for the compile-database caveat that governs how much either `<leader>la` or `<leader>lt` can actually catch.
 
 ## Known quirks
 
